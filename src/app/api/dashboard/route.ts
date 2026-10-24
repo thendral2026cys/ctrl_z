@@ -115,6 +115,7 @@ export async function GET(request: Request) {
               round.revealAvailableAt <= new Date()))
             ? round.revealVideoUrl
             : null,
+        revealAvailableAt: isAdmin ? round.revealAvailableAt : null,
         challenges:
           canSeeRoundContent && (available || isAdmin)
             ? round.challenges

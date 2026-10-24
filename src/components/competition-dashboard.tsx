@@ -36,6 +36,7 @@ type Round = {
   enabled: boolean;
   opensAt: string | null;
   closesAt: string | null;
+  revealAvailableAt: string | null;
   available: boolean;
   progress: { solved: number; total: number } | null;
   revealVideoUrl: string | null;
@@ -138,6 +139,10 @@ export function CompetitionDashboard({
   const [teamFormMessage, setTeamFormMessage] = useState("");
   const [teamFormError, setTeamFormError] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
+  const [showTeamCode, setShowTeamCode] = useState(false);
+  const [teamCodeMessage, setTeamCodeMessage] = useState("");
+  const [teamCodeError, setTeamCodeError] = useState(false);
+  const [teamCodeBusy, setTeamCodeBusy] = useState(false);
   const [openChallenge, setOpenChallenge] = useState<OpenChallenge | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [flag, setFlag] = useState("");
@@ -214,7 +219,11 @@ export function CompetitionDashboard({
         team?: { name: string };
       };
       if (!response.ok) throw new Error(body.error ?? "Team setup failed.");
-      if (body.inviteCode) setInviteCode(body.inviteCode);
+      if (body.inviteCode) {
+        setInviteCode(body.inviteCode);
+        setShowTeamCode(true);
+        setTeamCodeMessage("Share this code with teammates. Generating another code will invalidate it.");
+      }
       setTeamFormMessage(
         body.role === "ADMIN"
           ? "Organizer access is ready."
@@ -299,6 +308,43 @@ export function CompetitionDashboard({
     router.refresh();
   }
 
+  async function generateTeamCode() {
+    if (inviteCode) {
+      setShowTeamCode((visible) => !visible);
+      return;
+    }
+
+    setShowTeamCode(true);
+    setTeamCodeBusy(true);
+    setTeamCodeError(false);
+    setTeamCodeMessage("");
+
+    try {
+      const response = await fetch("/api/team/invite-code", { method: "POST" });
+      const body = (await response.json()) as {
+        error?: string;
+        inviteCode?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "The team code could not be generated.");
+      }
+      if (!body.inviteCode) {
+        throw new Error("The server did not return a team code.");
+      }
+      setInviteCode(body.inviteCode);
+      setTeamCodeMessage("Share this code with teammates. Any previous code is now invalid.");
+    } catch (reason) {
+      setTeamCodeError(true);
+      setTeamCodeMessage(
+        reason instanceof Error
+          ? reason.message
+          : "The team code could not be generated.",
+      );
+    } finally {
+      setTeamCodeBusy(false);
+    }
+  }
+
   if (error) {
     return (
       <main className="auth-layout">
@@ -336,6 +382,20 @@ export function CompetitionDashboard({
             <span className="brand-mark">V</span>
             <span>VIPERWOLF</span>
           </a>
+          {data.team?.memberRole === "LEADER" && (
+            <nav className="top-navigation" aria-label="Team navigation">
+              <button
+                className="btn-secondary"
+                type="button"
+                aria-expanded={showTeamCode}
+                aria-controls="team-code-panel"
+                onClick={() => void generateTeamCode()}
+                disabled={teamCodeBusy}
+              >
+                {teamCodeBusy ? "Loading code…" : "Team code"}
+              </button>
+            </nav>
+          )}
           <div className="user-area">
             <span className="subtle">
               {initialUser.name} · {data.team?.name ?? "Organizer"}
@@ -346,6 +406,34 @@ export function CompetitionDashboard({
             </button>
           </div>
         </header>
+
+        {showTeamCode && (
+          <section
+            className="team-code-panel"
+            id="team-code-panel"
+            aria-live="polite"
+          >
+            <div>
+              <div className="eyebrow">Team invite code</div>
+              <p className={teamCodeError ? "message error" : "subtle"}>
+                {teamCodeMessage ||
+                  (teamCodeBusy ? "Generating a secure code…" : "")}
+              </p>
+            </div>
+            {inviteCode && (
+              <div className="team-code-actions">
+                <code className="team-code-value">{inviteCode}</code>
+                <button
+                  className="btn-secondary"
+                  type="button"
+                  onClick={() => void navigator.clipboard.writeText(inviteCode)}
+                >
+                  Copy code
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         <main className="main-content" id="top">
           <section className="hero">

@@ -78,6 +78,40 @@ button:disabled {
   border-bottom: 1px solid #19283a;
 }
 
+.top-navigation {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.team-code-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 16px;
+  padding: 16px 20px;
+  border: 1px solid #1d6280;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #0a1a28, #0b1520);
+}
+
+.team-code-panel p {
+  margin: 6px 0 0;
+}
+
+.team-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.team-code-value {
+  overflow-wrap: anywhere;
+  color: #b8ebff;
+  font-size: 14px;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -724,10 +758,21 @@ button:disabled {
   .topbar {
     align-items: flex-start;
     padding: 16px 0;
+    flex-wrap: wrap;
   }
 
   .topbar .user-area {
     justify-content: flex-end;
+  }
+
+  .top-navigation {
+    margin-left: 0;
+  }
+
+  .team-code-panel,
+  .team-code-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .user-area .subtle {

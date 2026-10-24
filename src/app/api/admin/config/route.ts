@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { ApiError, handleApiError, readJson } from "@/lib/api";
+import { handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin, isSafeHttpsUrl } from "@/lib/security";
 import { requireAdmin } from "@/lib/server";
+import { isValidEventTimeZone } from "@/lib/time";
 
 const optionalHttpsUrl = z
   .union([z.string().trim().max(2048), z.literal("")])
@@ -16,7 +17,14 @@ const configSchema = z.object({
   promoTwoUrl: optionalHttpsUrl,
   externalContestUrl: optionalHttpsUrl,
   aiPolicy: z.string().trim().max(10000),
-  eventTimezone: z.string().trim().min(1).max(80),
+  eventTimezone: z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .refine(isValidEventTimeZone, {
+      message: "Enter a valid IANA event timezone, such as Asia/Kolkata.",
+    }),
   climaxVideoUrl: optionalHttpsUrl,
   climaxAvailableAt: z.union([z.string().datetime().or(z.literal(""))]),
   finalSubmissionEnabled: z.boolean(),
@@ -33,17 +41,6 @@ export async function PUT(request: Request) {
     assertSameOrigin(request);
     const session = await requireAdmin(request.headers);
     const input = configSchema.parse(await readJson(request));
-    let timezone: Intl.DateTimeFormat;
-
-    try {
-      timezone = new Intl.DateTimeFormat("en-US", {
-        timeZone: input.eventTimezone,
-      });
-    } catch {
-      throw new ApiError("Enter a valid IANA event timezone.", 400);
-    }
-    void timezone;
-
     const config = await prisma.$transaction(async (transaction) => {
       const updated = await transaction.eventConfig.upsert({
         where: { id: "main" },

@@ -78,6 +78,10 @@ Start the application:
 
 Open `http://localhost:3000` and choose **Continue with Google**. The Google account email must match `ADMIN_EMAIL` to complete the one-time organizer bootstrap with `ADMIN_BOOTSTRAP_TOKEN`. Participants sign in with Google, then create or join a team.
 
+Team leaders can use **Team code** in the dashboard navigation to display and copy an invite code. Generating a new code invalidates the team's previous invite code.
+
+Organizers should enter an IANA timezone identifier such as `Asia/Kolkata`, `America/New_York`, or `UTC`. Saved schedules remain at the same instant when the event timezone changes; displayed wall-clock times update to the new timezone. Times that do not exist during a daylight-saving transition are rejected; repeated wall-clock times use the earlier occurrence.
+
 ## Google OAuth credentials
 
 1. Open the [Google Cloud Console](https://console.cloud.google.com/) and create or select a project.

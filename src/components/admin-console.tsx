@@ -1,7 +1,12 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { eventTimeInput, eventTimeIso, formatEventTime } from "@/lib/time";
+import { FormEvent, useEffect, useRef, useState } from "react";
+import {
+  eventTimeInput,
+  eventTimeIso,
+  formatEventTime,
+  isValidEventTimeZone,
+} from "@/lib/time";
 
 type RoundInput = {
   id: string;
@@ -12,6 +17,7 @@ type RoundInput = {
   enabled: boolean;
   opensAt: string | null;
   closesAt: string | null;
+  revealAvailableAt: string | null;
   revealVideoUrl: string | null;
   challenges: {
     id: string;
@@ -109,9 +115,52 @@ export function AdminConsole({
   const [busy, setBusy] = useState(false);
   const [latestChallengeId, setLatestChallengeId] = useState("");
   const [config, setConfig] = useState<ConfigInput>(admin.config);
+  const [eventTimezoneInput, setEventTimezoneInput] = useState(
+    admin.config.eventTimezone,
+  );
+  const [timezoneError, setTimezoneError] = useState("");
   const [climaxTimeInput, setClimaxTimeInput] = useState(
     eventTimeInput(admin.config.climaxAvailableAt, admin.config.eventTimezone),
   );
+
+  function changeEventTimezone(value: string) {
+    setEventTimezoneInput(value);
+    if (!isValidEventTimeZone(value)) {
+      setTimezoneError(
+        "Enter a timezone identifier recognized by the IANA database, such as Asia/Kolkata.",
+      );
+      return;
+    }
+    if (value === config.eventTimezone) {
+      setTimezoneError("");
+      return;
+    }
+
+    try {
+      const convertedClimaxTime = climaxTimeInput
+        ? eventTimeInput(
+            admin.config.climaxAvailableAt &&
+              climaxTimeInput ===
+                eventTimeInput(
+                  admin.config.climaxAvailableAt,
+                  config.eventTimezone,
+                )
+              ? admin.config.climaxAvailableAt
+              : eventTimeIso(climaxTimeInput, config.eventTimezone),
+            value,
+          )
+        : "";
+      setConfig((previous) => ({ ...previous, eventTimezone: value }));
+      setClimaxTimeInput(convertedClimaxTime);
+      setTimezoneError("");
+    } catch (reason) {
+      setTimezoneError(
+        reason instanceof Error
+          ? reason.message
+          : "Correct the climax time before changing the event timezone.",
+      );
+    }
+  }
 
   async function request(
     path: string,
@@ -123,11 +172,31 @@ export function AdminConsole({
       headers: body instanceof FormData ? undefined : { "Content-Type": "application/json" },
       body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
     });
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      throw new Error(
+        response.ok
+          ? "The server returned an unexpected response."
+          : `The server could not complete the request (HTTP ${response.status}).`,
+      );
+    }
     const result = (await response.json()) as Record<string, unknown> & {
       error?: string;
+      details?: { field?: string; message?: string }[];
     };
     if (!response.ok) {
-      throw new Error(result.error ?? "The organizer action failed.");
+      const validationDetails = result.details
+        ?.slice(0, 3)
+        .map(({ field, message }) =>
+          [field, message].filter(Boolean).join(": "),
+        )
+        .filter(Boolean)
+        .join(" ");
+      throw new Error(
+        [result.error ?? "The organizer action failed.", validationDetails]
+          .filter(Boolean)
+          .join(" "),
+      );
     }
     onUpdated();
     return result;
@@ -324,13 +393,28 @@ export function AdminConsole({
             <input
               className="input"
               id="eventTimezone"
-              value={config.eventTimezone}
-              onChange={(event) =>
-                setConfig({ ...config, eventTimezone: event.target.value })
-              }
+              value={eventTimezoneInput}
+              onChange={(event) => changeEventTimezone(event.target.value)}
               placeholder="Asia/Kolkata"
+              list="event-timezone-options"
               required
             />
+            <datalist id="event-timezone-options">
+              <option value="UTC" />
+              <option value="Asia/Kolkata" />
+              <option value="Asia/Dubai" />
+              <option value="Asia/Singapore" />
+              <option value="Asia/Tokyo" />
+              <option value="Europe/London" />
+              <option value="Europe/Paris" />
+              <option value="America/New_York" />
+              <option value="America/Los_Angeles" />
+              <option value="Australia/Sydney" />
+            </datalist>
+            <span className={timezoneError ? "message error" : "subtle"}>
+              {timezoneError ||
+                "Use a timezone identifier recognized by the IANA database. Changing it keeps saved event times at the same instant."}
+            </span>
           </div>
           <div className="field full">
             <label htmlFor="aiPolicy">Official AI-use policy</label>
@@ -360,7 +444,9 @@ export function AdminConsole({
             />
           </div>
           <div className="field">
-            <label htmlFor="climaxAvailableAt">Climax availability (your local time)</label>
+            <label htmlFor="climaxAvailableAt">
+              Climax availability ({config.eventTimezone})
+            </label>
             <input
               className="input"
               id="climaxAvailableAt"
@@ -411,7 +497,15 @@ export function AdminConsole({
             </span>
           </label>
           <div className="full form-actions">
-            <button className="btn" disabled={busy} type="submit">
+            <button
+              className="btn"
+              disabled={
+                busy ||
+                Boolean(timezoneError) ||
+                eventTimezoneInput !== config.eventTimezone
+              }
+              type="submit"
+            >
               Save event configuration
             </button>
           </div>
@@ -453,6 +547,7 @@ export function AdminConsole({
               className="input"
               id="challenge-slug"
               name="slug"
+              maxLength={80}
               pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
               placeholder="device-log-review"
               required
@@ -877,14 +972,54 @@ function RoundControls({
   const [revealVideoUrl, setRevealVideoUrl] = useState(
     round.revealVideoUrl ?? "",
   );
-  const [revealAvailableAt, setRevealAvailableAt] = useState("");
+  const [revealAvailableAt, setRevealAvailableAt] = useState(
+    eventTimeInput(round.revealAvailableAt, timeZone),
+  );
   const [opensAt, setOpensAt] = useState(
     eventTimeInput(round.opensAt, timeZone),
   );
   const [closesAt, setClosesAt] = useState(
     eventTimeInput(round.closesAt, timeZone),
   );
+  const editedTimes = useRef({
+    opensAt: false,
+    closesAt: false,
+    revealAvailableAt: false,
+  });
+  const previousTimeZone = useRef(timeZone);
   const path = `/api/admin/rounds/${round.id}`;
+
+  useEffect(() => {
+    const previous = previousTimeZone.current;
+    if (previous === timeZone) return;
+    const convert = (
+      value: string,
+      storedValue: string | null,
+      edited: boolean,
+    ) => {
+      if (!value) return "";
+      if (!edited && storedValue) return eventTimeInput(storedValue, timeZone);
+      try {
+        return eventTimeInput(eventTimeIso(value, previous), timeZone);
+      } catch {
+        return value;
+      }
+    };
+    setOpensAt((value) =>
+      convert(value, round.opensAt, editedTimes.current.opensAt),
+    );
+    setClosesAt((value) =>
+      convert(value, round.closesAt, editedTimes.current.closesAt),
+    );
+    setRevealAvailableAt((value) =>
+      convert(
+        value,
+        round.revealAvailableAt,
+        editedTimes.current.revealAvailableAt,
+      ),
+    );
+    previousTimeZone.current = timeZone;
+  }, [round.closesAt, round.opensAt, round.revealAvailableAt, timeZone]);
 
   async function updateContent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -954,7 +1089,10 @@ function RoundControls({
             id={`opens-${round.id}`}
             type="datetime-local"
             value={opensAt}
-            onChange={(event) => setOpensAt(event.target.value)}
+            onChange={(event) => {
+              editedTimes.current.opensAt = true;
+              setOpensAt(event.target.value);
+            }}
             required
           />
         </div>
@@ -965,7 +1103,10 @@ function RoundControls({
             id={`closes-${round.id}`}
             type="datetime-local"
             value={closesAt}
-            onChange={(event) => setClosesAt(event.target.value)}
+            onChange={(event) => {
+              editedTimes.current.closesAt = true;
+              setClosesAt(event.target.value);
+            }}
           />
         </div>
         <div className="full form-actions">
@@ -1014,7 +1155,10 @@ function RoundControls({
               id={`reveal-at-${round.id}`}
               type="datetime-local"
               value={revealAvailableAt}
-              onChange={(event) => setRevealAvailableAt(event.target.value)}
+              onChange={(event) => {
+                editedTimes.current.revealAvailableAt = true;
+                setRevealAvailableAt(event.target.value);
+              }}
             />
           </div>
           <button className="btn-secondary" disabled={busy} type="submit">
@@ -1046,6 +1190,39 @@ function ChallengeEditor({
   runAction: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [opensAt, setOpensAt] = useState(
+    eventTimeInput(challenge.opensAt, timeZone),
+  );
+  const [closesAt, setClosesAt] = useState(
+    eventTimeInput(challenge.closesAt, timeZone),
+  );
+  const editedTimes = useRef({ opensAt: false, closesAt: false });
+  const previousTimeZone = useRef(timeZone);
+
+  useEffect(() => {
+    const previous = previousTimeZone.current;
+    if (previous === timeZone) return;
+    const convert = (
+      value: string,
+      storedValue: string | null,
+      edited: boolean,
+    ) => {
+      if (!value) return "";
+      if (!edited && storedValue) return eventTimeInput(storedValue, timeZone);
+      try {
+        return eventTimeInput(eventTimeIso(value, previous), timeZone);
+      } catch {
+        return value;
+      }
+    };
+    setOpensAt((value) =>
+      convert(value, challenge.opensAt, editedTimes.current.opensAt),
+    );
+    setClosesAt((value) =>
+      convert(value, challenge.closesAt, editedTimes.current.closesAt),
+    );
+    previousTimeZone.current = timeZone;
+  }, [challenge.closesAt, challenge.opensAt, timeZone]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1126,7 +1303,11 @@ function ChallengeEditor({
             id={`edit-opens-${challenge.id}`}
             name="opensAt"
             type="datetime-local"
-            defaultValue={eventTimeInput(challenge.opensAt, timeZone)}
+            value={opensAt}
+            onChange={(event) => {
+              editedTimes.current.opensAt = true;
+              setOpensAt(event.target.value);
+            }}
           />
         </div>
         <div className="field">
@@ -1138,7 +1319,11 @@ function ChallengeEditor({
             id={`edit-closes-${challenge.id}`}
             name="closesAt"
             type="datetime-local"
-            defaultValue={eventTimeInput(challenge.closesAt, timeZone)}
+            value={closesAt}
+            onChange={(event) => {
+              editedTimes.current.closesAt = true;
+              setClosesAt(event.target.value);
+            }}
           />
         </div>
         <div className="field full">

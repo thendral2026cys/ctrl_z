@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin, digestFlag } from "@/lib/security";
@@ -91,6 +92,18 @@ export async function POST(request: Request) {
 
     return Response.json({ challenge }, { status: 201 });
   } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return Response.json(
+        {
+          error:
+            "A challenge with this slug already exists in the selected round, or a final mission is already assigned.",
+        },
+        { status: 409 },
+      );
+    }
     return handleApiError(error);
   }
 }
