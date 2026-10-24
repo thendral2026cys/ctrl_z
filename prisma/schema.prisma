@@ -1,0 +1,302 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  LEADER
+  MEMBER
+}
+
+enum RoundStatus {
+  LOCKED
+  SCHEDULED
+  OPEN
+  CLOSED
+}
+
+enum ReviewStatus {
+  OPEN
+  REVIEWED
+  CLOSED
+}
+
+model User {
+  id               String            @id
+  name             String
+  email            String            @unique
+  emailVerified    Boolean           @default(false)
+  image            String?
+  role             String            @default("PARTICIPANT")
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  sessions         Session[]
+  accounts         Account[]
+  membership       Membership?
+  solvedChallenges ChallengeSolve[]
+  flagAttempts     FlagAttempt[]
+  scoreAdjustments ScoreAdjustment[] @relation("AdjustmentActor")
+  activity         ActivityLog[]     @relation("ActivityActor")
+  reviews          RuleReview[]      @relation("ReviewActor")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+}
+
+model Team {
+  id               String               @id @default(cuid())
+  name             String               @unique
+  inviteCodeHash   String               @unique
+  createdAt        DateTime             @default(now())
+  memberships      Membership[]
+  challengeSolves  ChallengeSolve[]
+  flagAttempts     FlagAttempt[]
+  timers           TeamChallengeTimer[]
+  scoreAdjustments ScoreAdjustment[]
+  finalSubmission  FinalSubmission?
+  activity         ActivityLog[]
+  reviews          RuleReview[]
+}
+
+model Membership {
+  id                        String         @id @default(cuid())
+  userId                    String         @unique
+  teamId                    String
+  role                      MembershipRole @default(MEMBER)
+  joinedAt                  DateTime       @default(now())
+  removedAt                 DateTime?
+  removedContributionPolicy String?
+  user                      User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  team                      Team           @relation(fields: [teamId], references: [id], onDelete: Restrict)
+
+  @@index([teamId, removedAt])
+}
+
+model Round {
+  id                String        @id @default(cuid())
+  number            Int           @unique
+  name              String
+  description       String        @default("")
+  status            RoundStatus   @default(LOCKED)
+  enabled           Boolean       @default(false)
+  opensAt           DateTime?
+  closesAt          DateTime?
+  revealVideoUrl    String?
+  revealAvailableAt DateTime?
+  challenges        Challenge[]
+  activity          ActivityLog[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+model Challenge {
+  id              String               @id @default(cuid())
+  roundId         String
+  slug            String
+  title           String
+  description     String               @default("")
+  evidenceText    String               @default("")
+  flagDigest      String
+  pointValue      Int
+  hints           String[]             @default([])
+  isFinalMission  Boolean              @default(false)
+  finalMissionKey String?              @unique
+  enabled         Boolean              @default(false)
+  opensAt         DateTime?
+  closesAt        DateTime?
+  round           Round                @relation(fields: [roundId], references: [id], onDelete: Restrict)
+  evidenceFiles   EvidenceFile[]
+  solves          ChallengeSolve[]
+  attempts        FlagAttempt[]
+  timers          TeamChallengeTimer[]
+  activity        ActivityLog[]
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  @@unique([roundId, slug])
+  @@index([roundId, enabled])
+}
+
+model EvidenceFile {
+  id          String    @id @default(cuid())
+  challengeId String
+  fileName    String
+  mediaType   String
+  byteLength  Int
+  contents    Bytes
+  createdAt   DateTime  @default(now())
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+
+  @@index([challengeId])
+}
+
+model ChallengeSolve {
+  id            String    @id @default(cuid())
+  teamId        String
+  challengeId   String
+  solvingUserId String
+  pointsAwarded Int
+  solvedAt      DateTime  @default(now())
+  team          Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  challenge     Challenge @relation(fields: [challengeId], references: [id], onDelete: Restrict)
+  solvingUser   User      @relation(fields: [solvingUserId], references: [id], onDelete: Restrict)
+
+  @@unique([teamId, challengeId])
+  @@index([teamId, solvedAt])
+}
+
+model FlagAttempt {
+  id          String    @id @default(cuid())
+  teamId      String
+  challengeId String
+  userId      String
+  isCorrect   Boolean
+  attemptedAt DateTime  @default(now())
+  team        Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Restrict)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([teamId, challengeId, attemptedAt])
+}
+
+model FlagRateLimit {
+  id              String   @id
+  key             String   @unique
+  count           Int
+  windowStartedAt DateTime
+}
+
+model TeamChallengeTimer {
+  id            String    @id @default(cuid())
+  teamId        String
+  challengeId   String
+  firstOpenedAt DateTime  @default(now())
+  team          Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  challenge     Challenge @relation(fields: [challengeId], references: [id], onDelete: Restrict)
+
+  @@unique([teamId, challengeId])
+}
+
+model ScoreAdjustment {
+  id        String   @id @default(cuid())
+  teamId    String
+  actorId   String
+  delta     Int
+  reason    String
+  createdAt DateTime @default(now())
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  actor     User     @relation("AdjustmentActor", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([teamId, createdAt])
+}
+
+model EventConfig {
+  id                        String    @id @default("main")
+  promoOneUrl               String?
+  promoTwoUrl               String?
+  externalContestUrl        String?
+  aiPolicy                  String    @default("")
+  eventTimezone             String    @default("UTC")
+  climaxVideoUrl            String?
+  climaxAvailableAt         DateTime?
+  finalLinkOneLabel         String    @default("Initial promotional video")
+  finalLinkOneDescription   String    @default("")
+  finalLinkTwoLabel         String    @default("Story reveal video")
+  finalLinkTwoDescription   String    @default("")
+  finalLinkThreeLabel       String    @default("Final climax video")
+  finalLinkThreeDescription String    @default("")
+  finalSubmissionEnabled    Boolean   @default(false)
+  adminBootstrapUsed        Boolean   @default(false)
+  updatedAt                 DateTime  @updatedAt
+}
+
+model FinalSubmission {
+  id          String   @id @default(cuid())
+  teamId      String   @unique
+  firstUrl    String
+  secondUrl   String
+  thirdUrl    String
+  submittedAt DateTime @updatedAt
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
+}
+
+model ActivityLog {
+  id          String     @id @default(cuid())
+  actorId     String?
+  actorRole   String?
+  teamId      String?
+  roundId     String?
+  challengeId String?
+  action      String
+  details     Json       @default("{}")
+  createdAt   DateTime   @default(now())
+  actor       User?      @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+  team        Team?      @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  round       Round?     @relation(fields: [roundId], references: [id], onDelete: SetNull)
+  challenge   Challenge? @relation(fields: [challengeId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([teamId, createdAt])
+}
+
+model RuleReview {
+  id            String       @id @default(cuid())
+  teamId        String
+  participantId String?
+  createdById   String
+  status        ReviewStatus @default(OPEN)
+  concern       String
+  evidence      String
+  decision      String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  team          Team         @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  createdBy     User         @relation("ReviewActor", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([teamId, createdAt])
+}
