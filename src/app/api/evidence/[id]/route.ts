@@ -1,7 +1,20 @@
 import { ApiError, handleApiError } from "@/lib/api";
 import { getAvailableChallenge } from "@/lib/competition";
 import { prisma } from "@/lib/db";
+import { isAutomaticScoringRound } from "@/lib/scoring";
 import { requireActiveMembership, requireUser } from "@/lib/server";
+
+// Mirror of the allowlist enforced at upload time (admin/evidence route).
+// We re-validate here so that even if a record were inserted directly into the
+// DB with a different mediaType, we never serve it with an unsafe Content-Type.
+const SAFE_MEDIA_TYPES = new Set([
+  "text/plain",
+  "text/csv",
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+]);
 
 export async function GET(
   request: Request,
@@ -27,12 +40,25 @@ export async function GET(
       throw new ApiError("Evidence file not found.", 404);
     }
     if (session.user.role !== "ADMIN") {
-      await getAvailableChallenge(file.challengeId);
+      const challenge = await getAvailableChallenge(file.challengeId);
+      if (!isAutomaticScoringRound(challenge.round.number)) {
+        throw new ApiError(
+          "Round 1 challenge materials are available on the external contest only.",
+          403,
+        );
+      }
     }
+
+    // Re-validate the stored media type against the trusted allowlist.
+    // Any value not on the list is served as a generic binary download to
+    // prevent the browser from treating unknown content as executable.
+    const contentType = SAFE_MEDIA_TYPES.has(file.mediaType)
+      ? file.mediaType
+      : "application/octet-stream";
 
     return new Response(new Uint8Array(file.contents), {
       headers: {
-        "Content-Type": file.mediaType,
+        "Content-Type": contentType,
         "Content-Length": String(file.contents.length),
         "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.fileName)}`,
         "X-Content-Type-Options": "nosniff",

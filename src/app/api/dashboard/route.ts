@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api";
 import { getTeamScore, isRoundAvailable } from "@/lib/competition";
 import { prisma } from "@/lib/db";
+import { calculateTeamScore } from "@/lib/scoring";
+import { EVENT_TIME_ZONE } from "@/lib/time";
 import { requireUser } from "@/lib/server";
 
 export const dynamic = "force-dynamic";
@@ -38,8 +40,15 @@ export async function GET(request: Request) {
       select: {
         id: true,
         name: true,
-        challengeSolves: { select: { pointsAwarded: true } },
-        scoreAdjustments: { select: { delta: true } },
+        roundOneScore: true,
+        challengeSolves: {
+          where: { challenge: { round: { number: { in: [2, 3] } } } },
+          select: { pointsAwarded: true },
+        },
+        scoreAdjustments: {
+          where: { roundNumber: null },
+          select: { delta: true },
+        },
       },
     });
 
@@ -47,10 +56,10 @@ export async function GET(request: Request) {
       .map((team) => ({
         id: team.id,
         name: team.name,
-        score: Math.max(
-          0,
-          team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0) +
-            team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
+        score: calculateTeamScore(
+          team.roundOneScore,
+          team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0),
+          team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
         ),
       }))
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
@@ -76,7 +85,9 @@ export async function GET(request: Request) {
       const available = isRoundAvailable(round, previous);
       const isAdmin = session.user.role === "ADMIN";
       const participantCanSeeRound = Boolean(
-        activeMembership && (available || round.status === "CLOSED"),
+        round.number !== 1 &&
+          activeMembership &&
+          (available || round.status === "CLOSED"),
       );
       const canSeeRoundContent = isAdmin || participantCanSeeRound;
       const now = new Date();
@@ -87,6 +98,64 @@ export async function GET(request: Request) {
             ((!challenge.opensAt || challenge.opensAt <= now) &&
               (!challenge.closesAt || challenge.closesAt > now))),
       );
+      const visibleChallenges = round.challenges.filter(
+        (challenge) => challenge.enabled,
+      );
+      const currentlyAvailableChallenges = visibleChallenges.filter(
+        (challenge) =>
+          (!challenge.opensAt || challenge.opensAt <= now) &&
+          (!challenge.closesAt || challenge.closesAt > now),
+      );
+      const nextChallengeStart = visibleChallenges
+        .map((challenge) => challenge.opensAt)
+        .filter((opensAt): opensAt is Date => Boolean(opensAt && opensAt > now))
+        .sort((a, b) => a.getTime() - b.getTime())[0];
+      let availabilityMessage: string | null = null;
+      if (!isAdmin && round.number > 1 && !available) {
+        const previousRound = index > 0 ? rounds[index - 1] : null;
+        if (round.status === "CLOSED") {
+          availabilityMessage = "This round has been closed by an administrator.";
+        } else if (
+          previousRound &&
+          previousRound.status !== "CLOSED" &&
+          !(previousRound.closesAt && previousRound.closesAt <= now)
+        ) {
+          availabilityMessage = `Round ${round.number} opens after Round ${previousRound.number} is closed by an administrator.`;
+        } else if (round.opensAt && round.opensAt > now) {
+          availabilityMessage = `This round is scheduled to open at ${new Intl.DateTimeFormat(
+            "en-IN",
+            {
+              timeZone: EVENT_TIME_ZONE,
+              dateStyle: "medium",
+              timeStyle: "short",
+            },
+          ).format(round.opensAt)} IST.`;
+        } else if (!round.enabled) {
+          availabilityMessage = "An administrator has not enabled this round yet.";
+        }
+      } else if (
+        !isAdmin &&
+        round.number > 1 &&
+        available &&
+        currentlyAvailableChallenges.length === 0
+      ) {
+        if (visibleChallenges.length === 0) {
+          availabilityMessage =
+            "No challenges have been published yet. An administrator must enable a challenge.";
+        } else if (nextChallengeStart) {
+          availabilityMessage = `The next challenge is scheduled to open at ${new Intl.DateTimeFormat(
+            "en-IN",
+            {
+              timeZone: EVENT_TIME_ZONE,
+              dateStyle: "medium",
+              timeStyle: "short",
+            },
+          ).format(nextChallengeStart)} IST.`;
+        } else {
+          availabilityMessage =
+            "No challenge is currently within its scheduled window. An administrator can restart a challenge to override its challenge-level schedule.";
+        }
+      }
 
       return {
         id: round.id,
@@ -99,6 +168,7 @@ export async function GET(request: Request) {
         opensAt: round.opensAt,
         closesAt: round.closesAt,
         available,
+        availabilityMessage,
         progress: canSeeRoundContent
           ? {
               solved: publishedChallenges.filter((challenge) =>
@@ -109,7 +179,8 @@ export async function GET(request: Request) {
           : null,
         revealVideoUrl:
           (isAdmin ||
-            (activeMembership &&
+            (round.number !== 1 &&
+              activeMembership &&
               round.status === "CLOSED" &&
               round.revealAvailableAt &&
               round.revealAvailableAt <= new Date()))
@@ -172,14 +243,14 @@ export async function GET(request: Request) {
       ) &&
       Boolean(
         activeMembership &&
-          rounds[2]?.challenges.some(
+          rounds.find((r) => r.number === 3)?.challenges.some(
             (challenge) =>
               challenge.isFinalMission &&
               solvedIds.has(challenge.id),
           ),
       );
     const finalMissionComplete = Boolean(
-      rounds[2]?.challenges.some(
+      rounds.find((r) => r.number === 3)?.challenges.some(
         (challenge) =>
           challenge.isFinalMission && solvedIds.has(challenge.id),
       ),
@@ -191,11 +262,21 @@ export async function GET(request: Request) {
             prisma.team.findMany({
               include: {
                 memberships: {
-                  include: { user: { select: { id: true, name: true, email: true } } },
+                  include: {
+                    user: {
+                      select: { id: true, name: true, email: true, role: true },
+                    },
+                  },
                   orderBy: { joinedAt: "asc" },
                 },
-                challengeSolves: { select: { pointsAwarded: true } },
-                scoreAdjustments: { select: { delta: true } },
+                challengeSolves: {
+                  where: { challenge: { round: { number: { in: [2, 3] } } } },
+                  select: { pointsAwarded: true },
+                },
+                scoreAdjustments: {
+                  where: { roundNumber: null },
+                  select: { delta: true },
+                },
               },
               orderBy: { name: "asc" },
             }),
@@ -204,7 +285,7 @@ export async function GET(request: Request) {
               orderBy: { createdAt: "desc" },
               include: {
                 actor: { select: { name: true } },
-                team: { select: { name: true } },
+                team: { select: { id: true, name: true } },
                 round: { select: { name: true } },
                 challenge: { select: { title: true } },
               },
@@ -221,16 +302,21 @@ export async function GET(request: Request) {
               },
               orderBy: { createdAt: "desc" },
             }),
+            prisma.user.findMany({
+              select: { id: true, name: true, email: true, role: true },
+              orderBy: { email: "asc" },
+            }),
           ])
         : null;
 
     const adminTeams = adminData?.[0].map((team) => ({
       id: team.id,
       name: team.name,
-      score: Math.max(
-        0,
-        team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0) +
-          team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
+      roundOneScore: team.roundOneScore,
+      score: calculateTeamScore(
+        team.roundOneScore,
+        team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0),
+        team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
       ),
       members: team.memberships.map((item) => ({
         id: item.id,
@@ -238,6 +324,7 @@ export async function GET(request: Request) {
         name: item.user.name,
         email: item.user.email,
         role: item.role,
+        userRole: item.user.role,
         removedAt: item.removedAt,
       })),
     }));
@@ -269,7 +356,7 @@ export async function GET(request: Request) {
           promoTwoUrl: config.promoTwoUrl,
           externalContestUrl: config.externalContestUrl,
           aiPolicy: config.aiPolicy,
-          eventTimezone: config.eventTimezone,
+          eventTimezone: EVENT_TIME_ZONE,
           climaxVideoUrl: climaxAvailable ? config.climaxVideoUrl : null,
           climaxAvailable,
           finalSubmissionEnabled:
@@ -291,7 +378,8 @@ export async function GET(request: Request) {
               activity: adminActivity,
               finalSubmissions: adminData[2],
               reviews: adminData[3],
-              config,
+              users: adminData[4],
+              config: { ...config, eventTimezone: EVENT_TIME_ZONE },
             }
           : null,
       },

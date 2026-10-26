@@ -2,10 +2,10 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import {
+  EVENT_TIME_ZONE,
   eventTimeInput,
   eventTimeIso,
   formatEventTime,
-  isValidEventTimeZone,
 } from "@/lib/time";
 
 type RoundInput = {
@@ -59,12 +59,14 @@ type AdminInput = {
     id: string;
     name: string;
     score: number;
+    roundOneScore: number;
     members: {
       id: string;
       userId: string;
       name: string;
       email: string;
       role: string;
+      userRole: string;
       removedAt: string | null;
     }[];
   }[];
@@ -72,7 +74,7 @@ type AdminInput = {
     id: string;
     actor: { name: string; role: string } | null;
     participantRole: string;
-    team: { name: string } | null;
+    team: { id: string; name: string } | null;
     round: { name: string } | null;
     challenge: { title: string } | null;
     action: string;
@@ -98,6 +100,12 @@ type AdminInput = {
     team: { name: string };
     createdBy: { name: string };
   }[];
+  users: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+  }[];
   config: ConfigInput;
 };
 
@@ -114,53 +122,27 @@ export function AdminConsole({
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [latestChallengeId, setLatestChallengeId] = useState("");
-  const [config, setConfig] = useState<ConfigInput>(admin.config);
-  const [eventTimezoneInput, setEventTimezoneInput] = useState(
-    admin.config.eventTimezone,
+  const [selectedChallengeRoundId, setSelectedChallengeRoundId] = useState(
+    () => rounds.find((round) => round.number === 2)?.id ?? rounds[0]?.id ?? "",
   );
-  const [timezoneError, setTimezoneError] = useState("");
+  const [selectedParticipantLogTeamId, setSelectedParticipantLogTeamId] =
+    useState("");
+  const [selectedTeamActivity, setSelectedTeamActivity] = useState<
+    AdminInput["activity"] | null
+  >(null);
+  const [teamActivityCursor, setTeamActivityCursor] = useState<string | null>(
+    null,
+  );
+  const [teamActivityLoading, setTeamActivityLoading] = useState(false);
+  const [teamActivityError, setTeamActivityError] = useState("");
+  const teamActivityRequestId = useRef(0);
+  const [config, setConfig] = useState<ConfigInput>({
+    ...admin.config,
+    eventTimezone: EVENT_TIME_ZONE,
+  });
   const [climaxTimeInput, setClimaxTimeInput] = useState(
-    eventTimeInput(admin.config.climaxAvailableAt, admin.config.eventTimezone),
+    eventTimeInput(admin.config.climaxAvailableAt, EVENT_TIME_ZONE),
   );
-
-  function changeEventTimezone(value: string) {
-    setEventTimezoneInput(value);
-    if (!isValidEventTimeZone(value)) {
-      setTimezoneError(
-        "Enter a timezone identifier recognized by the IANA database, such as Asia/Kolkata.",
-      );
-      return;
-    }
-    if (value === config.eventTimezone) {
-      setTimezoneError("");
-      return;
-    }
-
-    try {
-      const convertedClimaxTime = climaxTimeInput
-        ? eventTimeInput(
-            admin.config.climaxAvailableAt &&
-              climaxTimeInput ===
-                eventTimeInput(
-                  admin.config.climaxAvailableAt,
-                  config.eventTimezone,
-                )
-              ? admin.config.climaxAvailableAt
-              : eventTimeIso(climaxTimeInput, config.eventTimezone),
-            value,
-          )
-        : "";
-      setConfig((previous) => ({ ...previous, eventTimezone: value }));
-      setClimaxTimeInput(convertedClimaxTime);
-      setTimezoneError("");
-    } catch (reason) {
-      setTimezoneError(
-        reason instanceof Error
-          ? reason.message
-          : "Correct the climax time before changing the event timezone.",
-      );
-    }
-  }
 
   async function request(
     path: string,
@@ -251,6 +233,7 @@ export function AdminConsole({
         pointValue: Number(form.get("pointValue")),
         hints,
         isFinalMission: form.get("isFinalMission") === "on",
+        enabled: form.get("enabled") === "on",
         opensAt: form.get("opensAt")
           ? eventTimeIso(String(form.get("opensAt")), config.eventTimezone)
           : "",
@@ -283,6 +266,20 @@ export function AdminConsole({
       await request("/api/admin/scores", "POST", {
         teamId: String(form.get("teamId")),
         delta: Number(form.get("delta")),
+        reason: String(form.get("reason")),
+      });
+      formElement.reset();
+    });
+  }
+
+  async function setRoundOneScore(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    await runAction(async () => {
+      await request("/api/admin/scores", "POST", {
+        teamId: String(form.get("teamId")),
+        score: Number(form.get("score")),
         reason: String(form.get("reason")),
       });
       formElement.reset();
@@ -327,6 +324,132 @@ export function AdminConsole({
     });
   }
 
+  async function restoreMember(
+    event: FormEvent<HTMLFormElement>,
+    membershipId: string,
+  ) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    await runAction(async () => {
+      await request(`/api/admin/members/${membershipId}/restore`, "POST", {
+        reason: String(form.get("reason")),
+      });
+      formElement.reset();
+    });
+  }
+
+  async function createManualAdmin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    await runAction(async () => {
+      await request("/api/admin/users/manual", "POST", {
+        name: String(form.get("name")),
+        email: String(form.get("email")),
+        password: String(form.get("password")),
+      });
+      formElement.reset();
+    });
+  }
+
+  async function promoteUser(userId: string) {
+    if (!window.confirm("Grant this account administrator access?")) return;
+    await runAction(() =>
+      request("/api/admin/users/role", "POST", { userId }),
+    );
+  }
+
+  async function resetCompetition() {
+    const confirmation = window.prompt(
+      "This permanently removes teams, participant accounts, scores, challenge attempts/solves, submissions, reviews, timers, and prior activity logs. Administrator accounts and event/challenge configuration are preserved. Type RESET VIPERWOLF to continue.",
+    );
+    if (confirmation !== "RESET VIPERWOLF") return;
+    await runAction(() =>
+      request("/api/admin/reset", "POST", {
+        confirmation,
+      }),
+    );
+  }
+
+  async function loadTeamActivity(
+    teamId: string,
+    cursor?: string,
+    append = false,
+  ) {
+    const requestId = ++teamActivityRequestId.current;
+    if (!teamId) {
+      setSelectedParticipantLogTeamId("");
+      setSelectedTeamActivity(null);
+      setTeamActivityCursor(null);
+      setTeamActivityError("");
+      setTeamActivityLoading(false);
+      return;
+    }
+
+    if (!append) {
+      setSelectedParticipantLogTeamId(teamId);
+      setSelectedTeamActivity([]);
+      setTeamActivityCursor(null);
+      setTeamActivityError("");
+    }
+    setTeamActivityLoading(true);
+    try {
+      const query = new URLSearchParams({ teamId });
+      if (cursor) query.set("cursor", cursor);
+      const response = await fetch(`/api/admin/activity?${query}`, {
+        cache: "no-store",
+      });
+      const result = (await response.json()) as {
+        entries?: AdminInput["activity"];
+        nextCursor?: string | null;
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(result.error ?? "Team activity could not be loaded.");
+      }
+      if (requestId !== teamActivityRequestId.current) return;
+      setSelectedTeamActivity((current) =>
+        append ? [...(current ?? []), ...(result.entries ?? [])] : result.entries ?? [],
+      );
+      setTeamActivityCursor(result.nextCursor ?? null);
+    } catch (reason) {
+      if (requestId !== teamActivityRequestId.current) return;
+      setTeamActivityError(
+        reason instanceof Error
+          ? reason.message
+          : "Team activity could not be loaded.",
+      );
+    } finally {
+      if (requestId === teamActivityRequestId.current) {
+        setTeamActivityLoading(false);
+      }
+    }
+  }
+
+  const participantActivity = admin.activity.filter(
+    (entry) =>
+      entry.participantRole !== "ADMIN" &&
+      !entry.action.startsWith("CHALLENGE_") &&
+      !entry.action.startsWith("ROUND_") &&
+      !entry.action.startsWith("CONFIG_") &&
+      !entry.action.startsWith("SCORE_") &&
+      !entry.action.startsWith("MEMBER_") &&
+      !entry.action.startsWith("EVIDENCE_") &&
+      entry.action !== "ADMIN_BOOTSTRAP" &&
+      entry.action !== "RULE_REVIEW_DECIDED",
+  );
+  const filteredParticipantActivity = participantActivity.filter(
+    (entry) =>
+      !selectedParticipantLogTeamId ||
+      entry.team?.id === selectedParticipantLogTeamId,
+  );
+  const participantLogEntries =
+    selectedTeamActivity ?? filteredParticipantActivity;
+  const selectedTeamName = admin.teams.find(
+    (team) => team.id === selectedParticipantLogTeamId,
+  )?.name;
+
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -345,6 +468,107 @@ export function AdminConsole({
           {message}
         </p>
       )}
+
+      <details className="details">
+        <summary>Administrator access and manual login accounts</summary>
+        <p className="subtle" style={{ marginTop: 10 }}>
+          Only administrators can create administrator email/password accounts
+          or promote an existing account. Email/password registration is closed
+          to the public.
+        </p>
+        <form
+          className="form-grid"
+          onSubmit={createManualAdmin}
+          style={{ marginTop: 14 }}
+        >
+          <div className="field">
+            <label htmlFor="admin-login-name">Administrator name</label>
+            <input
+              className="input"
+              id="admin-login-name"
+              name="name"
+              maxLength={100}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="admin-login-email">Login ID (email)</label>
+            <input
+              className="input"
+              id="admin-login-email"
+              name="email"
+              type="email"
+              maxLength={254}
+              autoComplete="off"
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="admin-login-password">Temporary password</label>
+            <input
+              className="input"
+              id="admin-login-password"
+              name="password"
+              type="password"
+              minLength={12}
+              maxLength={128}
+              autoComplete="new-password"
+              required
+            />
+            <span className="subtle">At least 12 characters.</span>
+          </div>
+          <div className="full form-actions">
+            <button className="btn" disabled={busy} type="submit">
+              Create administrator login
+            </button>
+          </div>
+        </form>
+        <h3 style={{ marginTop: 20 }}>Existing accounts</h3>
+        <div className="card-list">
+          {admin.users.map((user) => (
+            <div className="link-card" key={user.id}>
+              <div>
+                <strong>{user.name}</strong>
+                <span className="subtle">{user.email}</span>
+              </div>
+              {user.role === "ADMIN" ? (
+                <span className="badge">ADMIN</span>
+              ) : (
+                <button
+                  className="btn-secondary"
+                  disabled={busy}
+                  onClick={() => void promoteUser(user.id)}
+                  type="button"
+                >
+                  Make administrator
+                </button>
+              )}
+            </div>
+          ))}
+          {admin.users.length === 0 && (
+            <p className="subtle">No user accounts are available.</p>
+          )}
+        </div>
+      </details>
+
+      <details className="details">
+        <summary>Danger zone · full competition reset</summary>
+        <p className="subtle" style={{ marginTop: 10 }}>
+          Removes teams, participant accounts, scores, submissions, challenge
+          history, reviews, timers, and previous activity logs. Administrator
+          accounts, event settings, schedules, and challenge definitions remain.
+          The reset itself is recorded in a new audit entry.
+        </p>
+        <button
+          className="btn-danger"
+          disabled={busy}
+          onClick={() => void resetCompetition()}
+          style={{ marginTop: 10 }}
+          type="button"
+        >
+          Reset competition data
+        </button>
+      </details>
 
       <details className="details" open>
         <summary>Event content, links, policy, and final submission</summary>
@@ -389,31 +613,10 @@ export function AdminConsole({
             />
           </div>
           <div className="field">
-            <label htmlFor="eventTimezone">Event timezone (IANA)</label>
-            <input
-              className="input"
-              id="eventTimezone"
-              value={eventTimezoneInput}
-              onChange={(event) => changeEventTimezone(event.target.value)}
-              placeholder="Asia/Kolkata"
-              list="event-timezone-options"
-              required
-            />
-            <datalist id="event-timezone-options">
-              <option value="UTC" />
-              <option value="Asia/Kolkata" />
-              <option value="Asia/Dubai" />
-              <option value="Asia/Singapore" />
-              <option value="Asia/Tokyo" />
-              <option value="Europe/London" />
-              <option value="Europe/Paris" />
-              <option value="America/New_York" />
-              <option value="America/Los_Angeles" />
-              <option value="Australia/Sydney" />
-            </datalist>
-            <span className={timezoneError ? "message error" : "subtle"}>
-              {timezoneError ||
-                "Use a timezone identifier recognized by the IANA database. Changing it keeps saved event times at the same instant."}
+            <span className="label">Permanent event timezone</span>
+            <span className="subtle">
+              All schedules, activity timestamps, and displayed event times use
+              India Standard Time (IST, Asia/Kolkata).
             </span>
           </div>
           <div className="field full">
@@ -499,11 +702,7 @@ export function AdminConsole({
           <div className="full form-actions">
             <button
               className="btn"
-              disabled={
-                busy ||
-                Boolean(timezoneError) ||
-                eventTimezoneInput !== config.eventTimezone
-              }
+              disabled={busy}
               type="submit"
             >
               Save event configuration
@@ -530,10 +729,62 @@ export function AdminConsole({
 
       <details className="details">
         <summary>Create challenges and add protected evidence files</summary>
+        <p className="subtle">
+          These setup slots are visible only to administrators. They do not
+          create challenges or affect scores until you save a challenge.
+        </p>
+        <div className="card-list" style={{ marginTop: 14 }}>
+          {[2, 3].map((roundNumber) => {
+            const round = rounds.find((item) => item.number === roundNumber);
+            if (!round) return null;
+
+            const placeholderCount = Math.max(
+              0,
+              3 - round.challenges.length,
+            );
+            return Array.from(
+              { length: placeholderCount },
+              (_, index) => (
+                <div
+                  className="link-card"
+                  key={`${round.id}-placeholder-${index}`}
+                >
+                  <div>
+                    <strong>
+                      Round {roundNumber} · Challenge slot{" "}
+                      {round.challenges.length + index + 1}
+                    </strong>
+                    <span className="subtle">
+                      Setup slot only; no challenge or points have been created.
+                    </span>
+                  </div>
+                  <button
+                    className="btn-secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setSelectedChallengeRoundId(round.id);
+                      document.getElementById("challenge-slug")?.focus();
+                    }}
+                    type="button"
+                  >
+                    Configure challenge
+                  </button>
+                </div>
+              ),
+            );
+          })}
+        </div>
         <form className="form-grid" onSubmit={createChallenge} style={{ marginTop: 14 }}>
           <div className="field">
             <label htmlFor="challenge-round">Round</label>
-            <select className="select" id="challenge-round" name="roundId" required>
+            <select
+              className="select"
+              id="challenge-round"
+              name="roundId"
+              onChange={(event) => setSelectedChallengeRoundId(event.target.value)}
+              required
+              value={selectedChallengeRoundId}
+            >
               {rounds.map((round) => (
                 <option key={round.id} value={round.id}>
                   {round.name}
@@ -644,9 +895,16 @@ export function AdminConsole({
               Mark as the one Round 3 device-unlocking challenge
             </span>
           </label>
+          <label className="field full">
+            <span>Publication</span>
+            <span className="inline-form">
+              <input defaultChecked name="enabled" type="checkbox" />
+              Publish immediately when the round is open
+            </span>
+          </label>
           <div className="full form-actions">
             <button className="btn" disabled={busy} type="submit">
-              Save challenge (disabled until published)
+              Create challenge
             </button>
           </div>
         </form>
@@ -683,6 +941,8 @@ export function AdminConsole({
                 key={challenge.id}
                 challenge={challenge}
                 roundName={round.name}
+                roundNumber={round.number}
+                roundStatus={round.status}
                 timeZone={config.eventTimezone}
                 busy={busy}
                 request={request}
@@ -694,7 +954,61 @@ export function AdminConsole({
       </details>
 
       <details className="details">
-        <summary>Manual team score adjustment</summary>
+        <summary>Round 1 manual team score entry</summary>
+        <p className="subtle">
+          Round 1 scores are entered by administrators only. The team total is
+          retained for leaderboard scoring, and an equal share for each active
+          team member is recorded in the audit log.
+        </p>
+        <form className="form-grid" onSubmit={setRoundOneScore}>
+          <div className="field">
+            <label htmlFor="round-one-score-team">Team</label>
+            <select
+              className="select"
+              id="round-one-score-team"
+              name="teamId"
+              required
+            >
+              {admin.teams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name} (Round 1: {team.roundOneScore}; total: {team.score})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="round-one-score">Round 1 team score</label>
+            <input
+              className="input"
+              id="round-one-score"
+              name="score"
+              type="number"
+              min={0}
+              max={100000}
+              required
+            />
+          </div>
+          <div className="field full">
+            <label htmlFor="round-one-score-reason">Reason (required)</label>
+            <input
+              className="input"
+              id="round-one-score-reason"
+              name="reason"
+              minLength={3}
+              maxLength={500}
+              required
+            />
+          </div>
+          <div className="full form-actions">
+            <button className="btn" disabled={busy} type="submit">
+              Save Round 1 score
+            </button>
+          </div>
+        </form>
+      </details>
+
+      <details className="details">
+        <summary>Administrator team score adjustment</summary>
         <p className="subtle">
           A reason is required, the operation is audited, and team totals never
           fall below zero.
@@ -758,7 +1072,35 @@ export function AdminConsole({
                       {member.removedAt ? " · removed" : ""}
                     </span>
                   </div>
-                  {!member.removedAt && (
+                  {member.removedAt ? (
+                    <form
+                      className="inline-form"
+                      onSubmit={(event) =>
+                        void restoreMember(event, member.id)
+                      }
+                    >
+                      <div className="field">
+                        <label htmlFor={`restore-reason-${member.id}`}>
+                          Restore reason (required)
+                        </label>
+                        <input
+                          className="input"
+                          id={`restore-reason-${member.id}`}
+                          name="reason"
+                          minLength={3}
+                          maxLength={500}
+                          required
+                        />
+                      </div>
+                      <button
+                        className="btn-secondary"
+                        disabled={busy}
+                        type="submit"
+                      >
+                        Restore participant and reverse removal
+                      </button>
+                    </form>
+                  ) : (
                     <details className="details">
                       <summary>Remove participant</summary>
                       <form
@@ -902,51 +1244,204 @@ export function AdminConsole({
         </div>
       </details>
 
+      {/* Separate Admin and Participant Log Spaces */}
       <details className="details">
-        <summary>Append-only activity history</summary>
-        <div className="table-wrap" style={{ marginTop: 14 }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Timestamp</th>
-                <th>Team / participant</th>
-                <th>Role</th>
-                <th>Activity</th>
-                <th>Challenge or event</th>
-                <th>Points / details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {admin.activity.map((entry) => (
-                <tr key={entry.id}>
-                  <td>
-                    {formatEventTime(entry.createdAt, config.eventTimezone)}
-                  </td>
-                  <td>
-                    {entry.team?.name ?? "—"}
-                    <br />
-                    {entry.actor?.name ?? "System"}
-                  </td>
-                  <td>{entry.participantRole}</td>
-                  <td>{entry.action}</td>
-                  <td>
-                    {entry.challenge?.title ??
-                      entry.round?.name ??
-                      "Competition"}
-                  </td>
-                  <td>
-                    <code>{JSON.stringify(entry.details)}</code>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {admin.activity.length === 0 && (
-            <p className="subtle">No recorded activity yet.</p>
+        <summary>
+          🛡️ Admin &amp; Organizer Activity Log (
+          {
+            admin.activity.filter(
+              (a) =>
+                a.participantRole === "ADMIN" ||
+                a.action.startsWith("CHALLENGE_") ||
+                a.action.startsWith("ROUND_") ||
+                a.action.startsWith("CONFIG_") ||
+                a.action.startsWith("SCORE_") ||
+                a.action.startsWith("MEMBER_") ||
+                a.action.startsWith("EVIDENCE_") ||
+                a.action === "ADMIN_BOOTSTRAP" ||
+                a.action === "RULE_REVIEW_DECIDED",
+            ).length
+          }{" "}
+          events)
+        </summary>
+        <p className="subtle" style={{ marginTop: 8 }}>
+          Administrative events performed by organizers: challenge management, round scheduling, score adjustments, evidence uploads, and configuration changes.
+        </p>
+        <ActivityTable
+          emptyMessage="No administrative actions recorded yet."
+          entries={admin.activity.filter(
+            (a) =>
+              a.participantRole === "ADMIN" ||
+              a.action.startsWith("CHALLENGE_") ||
+              a.action.startsWith("ROUND_") ||
+              a.action.startsWith("CONFIG_") ||
+              a.action.startsWith("SCORE_") ||
+              a.action.startsWith("MEMBER_") ||
+              a.action.startsWith("EVIDENCE_") ||
+              a.action === "ADMIN_BOOTSTRAP" ||
+              a.action === "RULE_REVIEW_DECIDED",
           )}
+          timeZone={config.eventTimezone}
+        />
+      </details>
+
+      <details className="details">
+        <summary>
+          👥 Participant &amp; Team Activity Log
+          {selectedTeamName ? ` · ${selectedTeamName}` : ""} (
+          {participantLogEntries.length} loaded events)
+        </summary>
+        <p className="subtle" style={{ marginTop: 8 }}>
+          Live participant and team actions: challenge investigations, flag
+          submissions, challenge solves, and team updates. Click a team name to
+          view its complete history.
+        </p>
+        <div className="field" style={{ marginTop: 12, maxWidth: 420 }}>
+          <label htmlFor="participant-log-team">Filter by team</label>
+          <select
+            className="select"
+            id="participant-log-team"
+            onChange={(event) => void loadTeamActivity(event.target.value)}
+            value={selectedParticipantLogTeamId}
+          >
+            <option value="">All teams</option>
+            {admin.teams.map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </select>
         </div>
+        {teamActivityError && (
+          <p className="message error" role="alert">
+            {teamActivityError}
+          </p>
+        )}
+        <ActivityTable
+          emptyMessage={
+            teamActivityLoading
+              ? "Loading team activity…"
+              : selectedParticipantLogTeamId
+                ? "No participant activity is recorded for this team."
+                : "No participant activity recorded yet."
+          }
+          entries={participantLogEntries}
+          onTeamClick={(teamId) => void loadTeamActivity(teamId)}
+          timeZone={config.eventTimezone}
+        />
+        {selectedParticipantLogTeamId && teamActivityCursor && (
+          <button
+            className="btn-secondary"
+            disabled={teamActivityLoading}
+            onClick={() =>
+              void loadTeamActivity(
+                selectedParticipantLogTeamId,
+                teamActivityCursor,
+                true,
+              )
+            }
+            style={{ marginTop: 12 }}
+            type="button"
+          >
+            {teamActivityLoading ? "Loading…" : "Load older activity"}
+          </button>
+        )}
       </details>
     </section>
+  );
+}
+
+function ActivityTable({
+  entries,
+  timeZone,
+  emptyMessage,
+  onTeamClick,
+}: {
+  entries: AdminInput["activity"];
+  timeZone: string;
+  emptyMessage: string;
+  onTeamClick?: (teamId: string) => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <p className="subtle" style={{ marginTop: 14 }}>
+        {emptyMessage}
+      </p>
+    );
+  }
+
+  return (
+    <div className="table-wrap" style={{ marginTop: 14 }}>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Team / User</th>
+            <th>Role</th>
+            <th>Action</th>
+            <th>Target</th>
+            <th>Details</th>
+          </tr>
+        </thead>
+        <tbody>
+          {entries.map((entry) => {
+            const team = entry.team;
+            return (
+              <tr key={entry.id}>
+                <td>{formatEventTime(entry.createdAt, timeZone)}</td>
+                <td>
+                  <strong>{entry.actor?.name ?? "System"}</strong>
+                  {team?.name && (
+                    <div className="subtle">
+                      Team:{" "}
+                      {onTeamClick ? (
+                        <button
+                          className="btn-secondary"
+                          onClick={() => onTeamClick(team.id)}
+                          style={{ padding: "2px 6px", fontSize: 12 }}
+                          type="button"
+                        >
+                          {team.name}
+                        </button>
+                      ) : (
+                        team.name
+                      )}
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <span
+                    className={`badge ${entry.participantRole === "ADMIN" ? "" : "green"}`}
+                  >
+                    {entry.participantRole}
+                  </span>
+                </td>
+                <td>
+                  <code>{entry.action}</code>
+                </td>
+                <td>
+                  {entry.challenge?.title ??
+                    entry.round?.name ??
+                    "Competition"}
+                </td>
+                <td>
+                  <pre
+                    style={{
+                      margin: 0,
+                      fontSize: "11px",
+                      maxWidth: 320,
+                      overflow: "auto",
+                    }}
+                  >
+                    {JSON.stringify(entry.details, null, 2)}
+                  </pre>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1061,13 +1556,13 @@ function RoundControls({
         <div className="button-row">
           <button
             className="btn"
-            disabled={busy || round.status === "CLOSED"}
+            disabled={busy || round.status === "OPEN"}
             onClick={() =>
               void runAction(() => request(path, "PATCH", { action: "start" }))
             }
             type="button"
           >
-            Start now
+            {round.status === "CLOSED" ? "Reopen round" : "Start now"}
           </button>
           <button
             className="btn-secondary"
@@ -1173,6 +1668,8 @@ function RoundControls({
 function ChallengeEditor({
   challenge,
   roundName,
+  roundNumber,
+  roundStatus,
   timeZone,
   busy,
   request,
@@ -1180,6 +1677,8 @@ function ChallengeEditor({
 }: {
   challenge: RoundInput["challenges"][number];
   roundName: string;
+  roundNumber: number;
+  roundStatus: string;
   timeZone: string;
   busy: boolean;
   request: (
@@ -1263,12 +1762,58 @@ function ChallengeEditor({
     formElement.reset();
   }
 
+  async function restartChallenge() {
+    await runAction(() =>
+      request(`/api/admin/challenges/${challenge.id}/restart`, "POST"),
+    );
+  }
+
+  async function deleteChallenge() {
+    if (
+      !window.confirm(
+        `Are you sure you want to permanently delete challenge "${challenge.title}"? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    await runAction(() =>
+      request(`/api/admin/challenges/${challenge.id}`, "DELETE"),
+    );
+  }
+
   return (
     <details className="list-card">
       <summary>
         {challenge.title} · {roundName} · {challenge.pointValue} points
         {challenge.enabled ? " · published" : " · unpublished"}
       </summary>
+      {[2, 3].includes(roundNumber) && (
+        <p className="subtle" style={{ marginTop: 12 }}>
+          Restarting immediately publishes this challenge and clears its
+          challenge-level open and close times. The parent round must still
+          be open; round scheduling and round closures remain in effect.
+        </p>
+      )}
+      <div className="button-row" style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {[2, 3].includes(roundNumber) && (
+          <button
+            className="btn-secondary"
+            disabled={busy || !["OPEN", "SCHEDULED"].includes(roundStatus)}
+            onClick={() => void restartChallenge()}
+            type="button"
+          >
+            Restart challenge now (admin override)
+          </button>
+        )}
+        <button
+          className="btn-danger"
+          disabled={busy}
+          onClick={() => void deleteChallenge()}
+          type="button"
+        >
+          Delete challenge
+        </button>
+      </div>
       <form className="form-grid" onSubmit={save} style={{ marginTop: 12 }}>
         <div className="field">
           <label htmlFor={`edit-title-${challenge.id}`}>Challenge title</label>
@@ -1389,9 +1934,17 @@ function ChallengeEditor({
             This is the final mission
           </span>
         </label>
-        <div className="full form-actions">
+        <div className="full form-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
           <button className="btn-secondary" disabled={busy} type="submit">
             Save challenge settings
+          </button>
+          <button
+            className="btn-danger"
+            disabled={busy}
+            onClick={() => void deleteChallenge()}
+            type="button"
+          >
+            Delete challenge
           </button>
         </div>
       </form>
@@ -1444,7 +1997,7 @@ function ReviewCard({
           <strong>{review.team.name} · {review.concern}</strong>
           <div className="subtle">
             Opened by {review.createdBy.name} ·{" "}
-            {new Date(review.createdAt).toLocaleString()}
+            {formatEventTime(review.createdAt, EVENT_TIME_ZONE)} IST
           </div>
         </div>
         <span className="badge gray">{review.status}</span>

@@ -25,6 +25,11 @@ export async function POST(request: Request) {
     }
     const configuredAdmin = process.env.ADMIN_EMAIL?.trim().toLowerCase();
 
+    // Track whether bootstrap just ran so we can treat the user as ADMIN for
+    // the remainder of this request (session.user.role is stale after the DB
+    // update and cannot be refreshed without a new session lookup).
+    let justBootstrapped = false;
+
     if (
       configuredAdmin &&
       session.user.email.toLowerCase() === configuredAdmin &&
@@ -48,6 +53,14 @@ export async function POST(request: Request) {
               409,
             );
           }
+          if (
+            await transaction.user.count({ where: { role: "ADMIN" } })
+          ) {
+            throw new ApiError(
+              "An administrator already exists. Only an administrator can grant additional administrator access.",
+              403,
+            );
+          }
 
           await transaction.user.update({
             where: { id: session.user.id },
@@ -69,12 +82,16 @@ export async function POST(request: Request) {
         { isolationLevel: "Serializable" },
       );
 
+      justBootstrapped = true;
+
       if (!input.teamName && !input.inviteCode) {
         return Response.json({ role: "ADMIN" });
       }
     }
 
-    if (session.user.role === "ADMIN" && !input.teamName && !input.inviteCode) {
+    // session.user.role reflects the role at session creation time and is not
+    // updated by the bootstrap above, so we also check justBootstrapped here.
+    if ((session.user.role === "ADMIN" || justBootstrapped) && !input.teamName && !input.inviteCode) {
       return Response.json({ role: "ADMIN" });
     }
 

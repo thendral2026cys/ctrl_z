@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AdminConsole } from "@/components/admin-console";
 import { authClient } from "@/lib/auth-client";
-import { formatEventTime } from "@/lib/time";
+import { EVENT_TIME_ZONE, formatEventTime } from "@/lib/time";
 
 type UserInfo = { name: string; email: string; role: string };
 type Challenge = {
@@ -38,6 +38,7 @@ type Round = {
   closesAt: string | null;
   revealAvailableAt: string | null;
   available: boolean;
+  availabilityMessage: string | null;
   progress: { solved: number; total: number } | null;
   revealVideoUrl: string | null;
   challenges: Challenge[];
@@ -80,12 +81,14 @@ type AdminData = {
     id: string;
     name: string;
     score: number;
+    roundOneScore: number;
     members: {
       id: string;
       userId: string;
       name: string;
       email: string;
       role: string;
+      userRole: string;
       removedAt: string | null;
     }[];
   }[];
@@ -93,7 +96,7 @@ type AdminData = {
     id: string;
     actor: { name: string; role: string } | null;
     participantRole: string;
-    team: { name: string } | null;
+    team: { id: string; name: string } | null;
     round: { name: string } | null;
     challenge: { title: string } | null;
     action: string;
@@ -118,6 +121,12 @@ type AdminData = {
     createdAt: string;
     team: { name: string };
     createdBy: { name: string };
+  }[];
+  users: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
   }[];
   config: Config & { climaxAvailableAt: string | null };
 };
@@ -576,7 +585,11 @@ export function CompetitionDashboard({
                 <span className="badge gray">All scores are team-based</span>
               </div>
               <div className="card-list">
-                {data.rounds.map((round) => (
+                {data.rounds.map((round) => {
+                  const externalOnly =
+                    data.user.role !== "ADMIN" && round.number === 1;
+
+                  return (
                   <article className="round-card" key={round.id}>
                     <div className="panel-heading">
                       <div>
@@ -592,17 +605,19 @@ export function CompetitionDashboard({
                         </div>
                         <h3>{round.name}</h3>
                       </div>
-                      {round.available && (
+                      {round.available && !externalOnly && (
                         <span className="subtle">
                           {round.challenges.length} challenge
                           {round.challenges.length === 1 ? "" : "s"}
                         </span>
                       )}
                     </div>
-                    {round.available && round.description && (
+                    {round.available && !externalOnly && round.description && (
                       <p className="subtle">{round.description}</p>
                     )}
-                    {round.progress && round.progress.total > 0 && (
+                    {!externalOnly &&
+                      round.progress &&
+                      round.progress.total > 0 && (
                       <div className="stack">
                         <div className="challenge-meta">
                           <span>Team progress</span>
@@ -618,11 +633,31 @@ export function CompetitionDashboard({
                         />
                       </div>
                     )}
-                    {round.available && (
+                    {externalOnly && (
+                      data.config.externalContestUrl ? (
+                        <a
+                          className="btn"
+                          href={data.config.externalContestUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open Round 1 external contest
+                        </a>
+                      ) : (
+                        <p className="subtle">
+                          The Round 1 external contest URL is not configured.
+                        </p>
+                      )
+                    )}
+                    {round.availabilityMessage && !round.available && (
+                      <p className="subtle">{round.availabilityMessage}</p>
+                    )}
+                    {round.available && !externalOnly && (
                       <div className="card-list">
                         {round.challenges.length === 0 && (
                           <p className="subtle">
-                            Challenge materials will appear here when published.
+                            {round.availabilityMessage ??
+                              "Challenge materials will appear here when published."}
                           </p>
                         )}
                         {round.challenges.map((challenge) => (
@@ -639,6 +674,9 @@ export function CompetitionDashboard({
                                   <span>{challenge.pointValue} points</span>
                                   {challenge.isFinalMission && (
                                     <span className="badge">FINAL MISSION</span>
+                                  )}
+                                  {!challenge.enabled && (
+                                    <span className="badge yellow">UNPUBLISHED</span>
                                   )}
                                   {challenge.solved && (
                                     <span className="badge green">SOLVED</span>
@@ -663,7 +701,7 @@ export function CompetitionDashboard({
                         ))}
                       </div>
                     )}
-                    {round.revealVideoUrl && (
+                    {!externalOnly && round.revealVideoUrl && (
                       <p style={{ marginBottom: 0 }}>
                         <a
                           href={round.revealVideoUrl}
@@ -675,7 +713,8 @@ export function CompetitionDashboard({
                       </p>
                     )}
                   </article>
-                ))}
+                  );
+                })}
               </div>
               {submitMessage && (
                 <p
@@ -932,9 +971,10 @@ export function FinalSubmissionForm({
       };
       if (!response.ok) throw new Error(body.error ?? "Submission failed.");
       setMessage(
-        `All three links were saved for your team at ${new Date(
+        `All three links were saved for your team at ${formatEventTime(
           body.submittedAt ?? "",
-        ).toLocaleString()}.`,
+          EVENT_TIME_ZONE,
+        )} IST.`,
       );
       onSaved();
     } catch (reason) {

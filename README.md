@@ -76,11 +76,11 @@ Start the application:
    npm run dev
    ```
 
-Open `http://localhost:3000` and choose **Continue with Google**. The Google account email must match `ADMIN_EMAIL` to complete the one-time organizer bootstrap with `ADMIN_BOOTSTRAP_TOKEN`. Participants sign in with Google, then create or join a team.
+Open `http://localhost:3000` and choose **Continue with Google**. The Google account email must match `ADMIN_EMAIL` to complete the one-time initial organizer bootstrap with `ADMIN_BOOTSTRAP_TOKEN`, and bootstrap is rejected once an administrator already exists. Participants can continue to sign in with Google and create or join a team. Administrators can also create email/password administrator accounts from the organizer console; public password registration is disabled.
 
 Team leaders can use **Team code** in the dashboard navigation to display and copy an invite code. Generating a new code invalidates the team's previous invite code.
 
-Organizers should enter an IANA timezone identifier such as `Asia/Kolkata`, `America/New_York`, or `UTC`. Saved schedules remain at the same instant when the event timezone changes; displayed wall-clock times update to the new timezone. Times that do not exist during a daylight-saving transition are rejected; repeated wall-clock times use the earlier occurrence.
+All event schedules and displayed timestamps permanently use India Standard Time (IST, `Asia/Kolkata`). Server-side availability checks compare the resulting timestamps against the current instant, regardless of the server's local timezone.
 
 ## Google OAuth credentials
 
@@ -90,10 +90,10 @@ Organizers should enter an IANA timezone identifier such as `Asia/Kolkata`, `Ame
 4. Add the exact callback URL to **Authorized redirect URIs**:
    - Local: `http://localhost:3000/api/auth/callback/google`
    - Production: `https://YOUR-DOMAIN/api/auth/callback/google`
-5. Copy the generated client ID and client secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, then restart the app. Keep the secret private. Both values are required; without them, the sign-in button stays disabled and no alternate login is offered.
+5. Copy the generated client ID and client secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, then restart the app. Keep the secret private. Both values are required to enable Google sign-in; administrators can still use their separately provisioned email/password login.
 6. In Google Cloud Console, add the deployed site to **Authorized JavaScript origins** as well (for example `http://localhost:3000` for local development). For production, use the same HTTPS origin as `APP_URL`.
 
-Google OAuth is the only account sign-in method. No demo, password, or bypass login is provided.
+Google OAuth is available to participants. Email/password sign-in is restricted to administrator accounts created or provisioned by an existing administrator. Public email/password sign-up is disabled.
 
 ## Organizer content and event preparation
 
@@ -107,6 +107,19 @@ Before opening registration or a round:
 6. Enable final submissions when appropriate. A team must solve the Round 3 final mission before submitting its three HTTPS links.
 
 The seed creates only round structure and default event configuration; it does not create placeholder answers, fictional story content, or videos.
+
+### Scoring permissions
+
+- Only authenticated administrators can open the organizer console or call manual score endpoints. Manual Round 1 team scores and administrator corrections require a reason and are recorded with the administrator, timestamp, previous score, and new score.
+- Round 1 scores remain team totals for the leaderboard. Each entry also records an exact, equally divided share for every active team member in the append-only audit log.
+- Participants see the Round 1 external contest link, not in-app Round 1 challenge content. The Round 2 and Round 3 organizer workspace provides three non-persistent setup slots per round; a challenge and its points are created only when an administrator saves it.
+- Administrators can restart a Round 2 or Round 3 challenge to publish it immediately and clear its challenge-level schedule. The parent round must still be open or scheduled; restarting a challenge does not bypass round ordering or round closures.
+- Administrators can restore removed participants, with any removal score deduction reversed and the action recorded in the audit log. Restoration is blocked when the team already has four active members.
+- Only administrators can promote an existing account or create a manual email/password administrator login. Passwords are hashed by Better Auth and are not written to audit logs.
+- Team names in the participant activity log filter to that team's full activity history, loaded in pages of 100 entries.
+- The admin-only full competition reset removes teams, participant accounts, scores, challenge attempt/solve history, submissions, reviews, timers, and earlier activity logs. It preserves administrator accounts and event/challenge configuration, requires typing `RESET VIPERWOLF`, and writes a new audit entry for the reset.
+- Rounds 2 and 3 award the configured challenge points only after the server verifies a correct flag. A challenge awards points once per team; repeat submissions do not award points again. The solve record identifies the team member and server-side solve time.
+- Team members and team leaders cannot enter or modify scores. Round 1 and administrator adjustments are not participant-facing controls.
 
 ## Production deployment for 100–150 participants
 

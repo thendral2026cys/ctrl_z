@@ -92,6 +92,7 @@ model Team {
   id               String               @id @default(cuid())
   name             String               @unique
   inviteCodeHash   String               @unique
+  roundOneScore    Int                  @default(0)
   createdAt        DateTime             @default(now())
   memberships      Membership[]
   challengeSolves  ChallengeSolve[]
@@ -104,15 +105,17 @@ model Team {
 }
 
 model Membership {
-  id                        String         @id @default(cuid())
-  userId                    String         @unique
+  id                        String           @id @default(cuid())
+  userId                    String           @unique
   teamId                    String
-  role                      MembershipRole @default(MEMBER)
-  joinedAt                  DateTime       @default(now())
+  role                      MembershipRole   @default(MEMBER)
+  removalScoreAdjustmentId  String?          @unique
+  joinedAt                  DateTime         @default(now())
   removedAt                 DateTime?
   removedContributionPolicy String?
-  user                      User           @relation(fields: [userId], references: [id], onDelete: Restrict)
-  team                      Team           @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  user                      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  team                      Team             @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  removalScoreAdjustment    ScoreAdjustment? @relation("RemovalScoreAdjustment", fields: [removalScoreAdjustmentId], references: [id], onDelete: SetNull)
 
   @@index([teamId, removedAt])
 }
@@ -223,14 +226,18 @@ model TeamChallengeTimer {
 }
 
 model ScoreAdjustment {
-  id        String   @id @default(cuid())
-  teamId    String
-  actorId   String
-  delta     Int
-  reason    String
-  createdAt DateTime @default(now())
-  team      Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
-  actor     User     @relation("AdjustmentActor", fields: [actorId], references: [id], onDelete: Restrict)
+  id            String      @id @default(cuid())
+  teamId        String
+  actorId       String
+  delta         Int
+  reason        String
+  roundNumber   Int?
+  previousScore Int?
+  newScore      Int?
+  createdAt     DateTime    @default(now())
+  team          Team        @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  actor         User        @relation("AdjustmentActor", fields: [actorId], references: [id], onDelete: Restrict)
+  removalFor    Membership? @relation("RemovalScoreAdjustment")
 
   @@index([teamId, createdAt])
 }
@@ -241,7 +248,7 @@ model EventConfig {
   promoTwoUrl               String?
   externalContestUrl        String?
   aiPolicy                  String    @default("")
-  eventTimezone             String    @default("UTC")
+  eventTimezone             String    @default("Asia/Kolkata")
   climaxVideoUrl            String?
   climaxAvailableAt         DateTime?
   finalLinkOneLabel         String    @default("Initial promotional video")
@@ -261,7 +268,10 @@ model FinalSubmission {
   firstUrl    String
   secondUrl   String
   thirdUrl    String
-  submittedAt DateTime @updatedAt
+  // submittedAt records the first submission time and must not change on
+  // subsequent updates. Use updatedAt to track the last modification.
+  submittedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
   team        Team     @relation(fields: [teamId], references: [id], onDelete: Restrict)
 }
 

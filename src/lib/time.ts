@@ -1,3 +1,5 @@
+export const EVENT_TIME_ZONE = "Asia/Kolkata";
+
 export function isValidEventTimeZone(timeZone: string) {
   if (!timeZone.trim()) return false;
   try {

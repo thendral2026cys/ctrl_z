@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { prisma } from "@/lib/db";
+import { calculateTeamScore } from "@/lib/scoring";
 
 export function isRoundAvailable(
   round: {
@@ -16,9 +17,17 @@ export function isRoundAvailable(
   if (
     !round.enabled ||
     !["OPEN", "SCHEDULED"].includes(round.status) ||
-    (round.opensAt && round.opensAt > now) ||
     (round.closesAt && round.closesAt <= now)
   ) {
+    return false;
+  }
+
+  // A SCHEDULED round is only available once its opensAt time has passed.
+  // An OPEN round (manually started) has no opensAt gate.
+  if (round.status === "SCHEDULED") {
+    if (!round.opensAt || round.opensAt > now) return false;
+  } else if (round.opensAt && round.opensAt > now) {
+    // OPEN rounds can still have a future opensAt if they were rescheduled.
     return false;
   }
 
@@ -39,8 +48,15 @@ export async function getAvailableChallenge(challengeId: string) {
     include: { round: true },
   });
 
-  if (!challenge || !challenge.enabled) {
-    throw new ApiError("Challenge is unavailable.", 404);
+  if (!challenge) {
+    throw new ApiError("Challenge not found.", 404);
+  }
+
+  if (!challenge.enabled) {
+    throw new ApiError(
+      "Challenge is not published yet. Please enable it in the Organizer Workspace.",
+      403,
+    );
   }
 
   const previousRound =
@@ -75,8 +91,15 @@ export async function getAvailableChallengeInTransaction(
     where: { id: challengeId },
     include: { round: true },
   });
-  if (!challenge || !challenge.enabled) {
-    throw new ApiError("Challenge is unavailable.", 404);
+  if (!challenge) {
+    throw new ApiError("Challenge not found.", 404);
+  }
+
+  if (!challenge.enabled) {
+    throw new ApiError(
+      "Challenge is not published yet. Please enable it in the Organizer Workspace.",
+      403,
+    );
   }
 
   const previousRound =
@@ -103,19 +126,31 @@ export async function getAvailableChallengeInTransaction(
 }
 
 export async function getTeamScore(teamId: string) {
-  const [solves, adjustments] = await Promise.all([
+  const [team, solves, adjustments] = await Promise.all([
+    prisma.team.findUnique({
+      where: { id: teamId },
+      select: { roundOneScore: true },
+    }),
     prisma.challengeSolve.aggregate({
-      where: { teamId },
+      where: {
+        teamId,
+        challenge: { round: { number: { in: [2, 3] } } },
+      },
       _sum: { pointsAwarded: true },
     }),
     prisma.scoreAdjustment.aggregate({
-      where: { teamId },
+      where: { teamId, roundNumber: null },
       _sum: { delta: true },
     }),
   ]);
 
-  return Math.max(
-    0,
-    (solves._sum.pointsAwarded ?? 0) + (adjustments._sum.delta ?? 0),
+  if (!team) {
+    throw new ApiError("Team not found.", 404);
+  }
+
+  return calculateTeamScore(
+    team.roundOneScore,
+    solves._sum.pointsAwarded ?? 0,
+    adjustments._sum.delta ?? 0,
   );
 }

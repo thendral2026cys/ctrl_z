@@ -1,6 +1,7 @@
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
+import { calculateTeamScore } from "@/lib/scoring";
 import { requireAdmin } from "@/lib/server";
 import { z } from "zod";
 
@@ -30,28 +31,42 @@ export async function POST(
       }
 
       let contributionRemoved = 0;
+      let previousScore: number | null = null;
+      let newScore: number | null = null;
+      let removalScoreAdjustmentId: string | null = null;
       if (input.contributionPolicy === "EXCLUDE") {
-        const [solves, scoreSolves, scoreAdjustments] = await Promise.all([
+        const [solves, scoreSolves, scoreAdjustments, team] = await Promise.all([
           transaction.challengeSolve.aggregate({
             where: {
               teamId: membership.teamId,
               solvingUserId: membership.userId,
+              challenge: { round: { number: { in: [2, 3] } } },
             },
             _sum: { pointsAwarded: true },
           }),
           transaction.challengeSolve.aggregate({
-            where: { teamId: membership.teamId },
+            where: {
+              teamId: membership.teamId,
+              challenge: { round: { number: { in: [2, 3] } } },
+            },
             _sum: { pointsAwarded: true },
           }),
           transaction.scoreAdjustment.aggregate({
-            where: { teamId: membership.teamId },
+            where: { teamId: membership.teamId, roundNumber: null },
             _sum: { delta: true },
           }),
+          transaction.team.findUnique({
+            where: { id: membership.teamId },
+            select: { roundOneScore: true },
+          }),
         ]);
-        const score = Math.max(
-          0,
-          (scoreSolves._sum.pointsAwarded ?? 0) +
-            (scoreAdjustments._sum.delta ?? 0),
+        if (!team) {
+          throw new ApiError("Team not found.", 404);
+        }
+        const score = calculateTeamScore(
+          team.roundOneScore,
+          scoreSolves._sum.pointsAwarded ?? 0,
+          scoreAdjustments._sum.delta ?? 0,
         );
         contributionRemoved = Math.min(
           solves._sum.pointsAwarded ?? 0,
@@ -59,14 +74,19 @@ export async function POST(
         );
 
         if (contributionRemoved > 0) {
-          await transaction.scoreAdjustment.create({
+          previousScore = score;
+          newScore = score - contributionRemoved;
+          const adjustment = await transaction.scoreAdjustment.create({
             data: {
               teamId: membership.teamId,
               actorId: session.user.id,
               delta: -contributionRemoved,
+              previousScore,
+              newScore,
               reason: `Participant removal (${membership.user.name}): ${input.reason}`,
             },
           });
+          removalScoreAdjustmentId = adjustment.id;
         }
       }
 
@@ -75,6 +95,7 @@ export async function POST(
         data: {
           removedAt: new Date(),
           removedContributionPolicy: input.contributionPolicy,
+          removalScoreAdjustmentId,
         },
       });
 
@@ -102,9 +123,14 @@ export async function POST(
           teamId: membership.teamId,
           action: "TEAM_MEMBER_REMOVED",
           details: {
+            administratorEmail: session.user.email,
+            membershipId: membership.id,
+            participantId: membership.userId,
             participantName: membership.user.name,
             contributionPolicy: input.contributionPolicy,
             contributionRemoved,
+            previousScore,
+            newScore,
             reason: input.reason,
           },
         },

@@ -3,7 +3,7 @@ import { handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin, isSafeHttpsUrl } from "@/lib/security";
 import { requireAdmin } from "@/lib/server";
-import { isValidEventTimeZone } from "@/lib/time";
+import { EVENT_TIME_ZONE } from "@/lib/time";
 
 const optionalHttpsUrl = z
   .union([z.string().trim().max(2048), z.literal("")])
@@ -17,14 +17,8 @@ const configSchema = z.object({
   promoTwoUrl: optionalHttpsUrl,
   externalContestUrl: optionalHttpsUrl,
   aiPolicy: z.string().trim().max(10000),
-  eventTimezone: z
-    .string()
-    .trim()
-    .min(1)
-    .max(80)
-    .refine(isValidEventTimeZone, {
-      message: "Enter a valid IANA event timezone, such as Asia/Kolkata.",
-    }),
+  // eventTimezone is not accepted from the client; it is always set server-side
+  // to EVENT_TIME_ZONE so the field cannot be changed via the API.
   climaxVideoUrl: optionalHttpsUrl,
   climaxAvailableAt: z.union([z.string().datetime().or(z.literal(""))]),
   finalSubmissionEnabled: z.boolean(),
@@ -46,6 +40,7 @@ export async function PUT(request: Request) {
         where: { id: "main" },
         update: {
           ...input,
+          eventTimezone: EVENT_TIME_ZONE,
           climaxAvailableAt: input.climaxAvailableAt
             ? new Date(input.climaxAvailableAt)
             : null,
@@ -53,6 +48,7 @@ export async function PUT(request: Request) {
         create: {
           id: "main",
           ...input,
+          eventTimezone: EVENT_TIME_ZONE,
           climaxAvailableAt: input.climaxAvailableAt
             ? new Date(input.climaxAvailableAt)
             : null,

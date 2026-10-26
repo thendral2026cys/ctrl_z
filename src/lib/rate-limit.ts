@@ -1,15 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { prisma } from "@/lib/db";
 
 const attemptLimit = 20;
 
+// Accept either a top-level Prisma client or a transaction client so this
+// function can be called inside a Serializable transaction (eliminating the
+// TOCTOU gap between the rate-limit check and the actual solve creation).
+type DbClient = Prisma.TransactionClient | typeof prisma;
+
 export async function enforceFlagAttemptLimit(
+  db: DbClient,
   teamId: string,
   challengeId: string,
 ) {
   const key = `${teamId}:${challengeId}`;
-  const [bucket] = await prisma.$queryRaw<{ count: number }[]>`
+  const [bucket] = await db.$queryRaw<{ count: number }[]>`
     INSERT INTO "FlagRateLimit" ("id", "key", "count", "windowStartedAt")
     VALUES (${randomUUID()}, ${key}, 1, CURRENT_TIMESTAMP)
     ON CONFLICT ("key") DO UPDATE

@@ -56,9 +56,16 @@ export function assertSameOrigin(request: Request) {
     throw new Error("A same-origin request is required.");
   }
 
-  const expectedOrigin = new URL(
-    process.env.APP_URL ?? request.url,
-  ).origin;
+  const appUrl = process.env.APP_URL;
+  if (!appUrl) {
+    // Failing open here would silently disable CSRF protection, so we fail
+    // closed. Set APP_URL in your environment (e.g. http://localhost:3000).
+    throw new Error(
+      "APP_URL environment variable must be set to enable same-origin enforcement.",
+    );
+  }
+
+  const expectedOrigin = new URL(appUrl).origin;
 
   if (origin !== expectedOrigin) {
     throw new Error("Cross-origin requests are not allowed.");

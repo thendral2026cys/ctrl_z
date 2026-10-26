@@ -8,10 +8,17 @@ import {
   verifyFlag,
 } from "../src/lib/security.ts";
 import {
+  EVENT_TIME_ZONE,
   eventTimeInput,
   eventTimeIso,
   isValidEventTimeZone,
 } from "../src/lib/time.ts";
+import {
+  allocateRoundOneScore,
+  canAdminRestartChallenge,
+  calculateTeamScore,
+  isAutomaticScoringRound,
+} from "../src/lib/scoring.ts";
 
 test("flag answers are stored as keyed digests and compared exactly", () => {
   process.env.FLAG_SECRET = "a-test-only-secret-that-is-at-least-32-characters";
@@ -49,6 +56,14 @@ test("event times round-trip through the configured event timezone", () => {
 
   assert.equal(instant, "2026-10-23T18:30:00.000Z");
   assert.equal(eventTimeInput(instant, "Asia/Kolkata"), value);
+});
+
+test("competition schedules permanently use India Standard Time", () => {
+  assert.equal(EVENT_TIME_ZONE, "Asia/Kolkata");
+  assert.equal(
+    eventTimeIso("2026-10-24T00:00", EVENT_TIME_ZONE),
+    "2026-10-23T18:30:00.000Z",
+  );
 });
 
 test("event time conversion preserves the instant when changing timezones", () => {
@@ -95,4 +110,54 @@ test("repeated daylight-saving wall-clock times consistently use the earlier ins
     eventTimeIso("2026-11-01T01:30", "America/New_York"),
     "2026-11-01T05:30:00.000Z",
   );
+});
+
+test("team scores keep Round 1 separate from automatic points and adjustments", () => {
+  assert.equal(calculateTeamScore(40, 25, 5), 70);
+  assert.equal(calculateTeamScore(40, 25, -90), 0);
+});
+
+test("Round 1 score allocations are equal and preserve fractional shares exactly", () => {
+  assert.deepEqual(
+    allocateRoundOneScore(101, [
+      { userId: "member-1" },
+      { userId: "member-2" },
+      { userId: "member-3" },
+      { userId: "member-4" },
+    ]),
+    [
+      { userId: "member-1", scoreNumerator: 101, scoreDenominator: 4 },
+      { userId: "member-2", scoreNumerator: 101, scoreDenominator: 4 },
+      { userId: "member-3", scoreNumerator: 101, scoreDenominator: 4 },
+      { userId: "member-4", scoreNumerator: 101, scoreDenominator: 4 },
+    ],
+  );
+  assert.deepEqual(
+    allocateRoundOneScore(10, [
+      { userId: "member-1" },
+      { userId: "member-2" },
+      { userId: "member-3" },
+    ]),
+    [
+      { userId: "member-1", scoreNumerator: 10, scoreDenominator: 3 },
+      { userId: "member-2", scoreNumerator: 10, scoreDenominator: 3 },
+      { userId: "member-3", scoreNumerator: 10, scoreDenominator: 3 },
+    ],
+  );
+  assert.throws(() => allocateRoundOneScore(10, []), /active team member/);
+});
+
+test("automatic challenge scoring is limited to Rounds 2 and 3", () => {
+  assert.equal(isAutomaticScoringRound(1), false);
+  assert.equal(isAutomaticScoringRound(2), true);
+  assert.equal(isAutomaticScoringRound(3), true);
+  assert.equal(isAutomaticScoringRound(4), false);
+});
+
+test("challenge restart overrides require an open or scheduled Round 2 or 3", () => {
+  assert.equal(canAdminRestartChallenge(2, "OPEN"), true);
+  assert.equal(canAdminRestartChallenge(3, "SCHEDULED"), true);
+  assert.equal(canAdminRestartChallenge(1, "OPEN"), false);
+  assert.equal(canAdminRestartChallenge(2, "CLOSED"), false);
+  assert.equal(canAdminRestartChallenge(3, "LOCKED"), false);
 });

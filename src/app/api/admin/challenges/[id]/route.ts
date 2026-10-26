@@ -148,3 +148,67 @@ export async function PATCH(
     return handleApiError(error);
   }
 }
+
+export async function DELETE(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  try {
+    assertSameOrigin(request);
+    const session = await requireAdmin(request.headers);
+    const { id } = await context.params;
+
+    const deleted = await prisma.$transaction(
+      async (transaction) => {
+        const current = await transaction.challenge.findUnique({
+          where: { id },
+          select: {
+            id: true,
+            title: true,
+            roundId: true,
+          },
+        });
+
+        if (!current) {
+          throw new ApiError("Challenge not found.", 404);
+        }
+
+        // Enable admin delete override in PostgreSQL session so append-only triggers allow deletion
+        await transaction.$executeRawUnsafe(
+          "SET LOCAL viperwolf.allow_admin_delete = 'true'",
+        );
+
+        // Clear challengeId on activity logs first to avoid FK update trigger conflicts
+        await transaction.activityLog.updateMany({
+          where: { challengeId: id },
+          data: { challengeId: null },
+        });
+
+        // Delete associated records with Restrict foreign keys
+        await transaction.evidenceFile.deleteMany({ where: { challengeId: id } });
+        await transaction.teamChallengeTimer.deleteMany({ where: { challengeId: id } });
+        await transaction.flagAttempt.deleteMany({ where: { challengeId: id } });
+        await transaction.challengeSolve.deleteMany({ where: { challengeId: id } });
+        await transaction.challenge.delete({ where: { id } });
+
+        await transaction.activityLog.create({
+          data: {
+            actorId: session.user.id,
+            actorRole: "ADMIN",
+            roundId: current.roundId,
+            challengeId: null,
+            action: "CHALLENGE_DELETED",
+            details: { title: current.title, challengeId: id },
+          },
+        });
+
+        return current;
+      },
+      { isolationLevel: "Serializable" },
+    );
+
+    return Response.json({ success: true, deleted });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}

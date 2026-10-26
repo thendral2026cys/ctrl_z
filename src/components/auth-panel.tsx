@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
+import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth-client";
 
 type PublicContent = {
@@ -18,7 +19,9 @@ const signalStates = [
 ];
 
 export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const [signalState, setSignalState] = useState(signalStates[0]);
@@ -79,6 +82,33 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
           : "Google sign-in could not start. Please try again.",
       );
       setBusy(false);
+    }
+  }
+
+  async function signInWithPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (manualBusy) return;
+    setManualBusy(true);
+    setMessage("");
+    setError(false);
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await authClient.signIn.email({
+        email: String(form.get("email")).trim(),
+        password: String(form.get("password")),
+        callbackURL: "/",
+      });
+      if (result.error) {
+        throw new Error(result.error.message ?? "Manual sign-in failed.");
+      }
+      router.replace("/");
+      router.refresh();
+    } catch (reason) {
+      setError(true);
+      setMessage(
+        reason instanceof Error ? reason.message : "Manual sign-in failed.",
+      );
+      setManualBusy(false);
     }
   }
 
@@ -217,6 +247,44 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                 <span aria-hidden="true">·</span>
                 <span>GOOGLE OAUTH 2.0</span>
               </div>
+              <div className="auth-assurance" aria-hidden="true">
+                <span>ORGANIZER ACCESS</span>
+              </div>
+              <form
+                className="form-grid"
+                onSubmit={signInWithPassword}
+                style={{ marginTop: 14 }}
+              >
+                <div className="field">
+                  <label htmlFor="manual-login-email">Administrator login ID</label>
+                  <input
+                    className="input"
+                    id="manual-login-email"
+                    name="email"
+                    type="email"
+                    autoComplete="username"
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="manual-login-password">Password</label>
+                  <input
+                    className="input"
+                    id="manual-login-password"
+                    name="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                  />
+                </div>
+                <button
+                  className="btn-secondary"
+                  disabled={manualBusy}
+                  type="submit"
+                >
+                  {manualBusy ? "Signing in…" : "Administrator manual sign-in"}
+                </button>
+              </form>
             </div>
           </div>
 

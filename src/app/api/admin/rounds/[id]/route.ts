@@ -47,14 +47,28 @@ export async function PATCH(
         }
 
         if (input.action === "start" || input.action === "schedule") {
-          if (round.status === "CLOSED") {
-            throw new ApiError("A closed round cannot be reopened.", 409);
-          }
-          if (round.status === "OPEN") {
+          if (round.status === "OPEN" && input.action === "start") {
             throw new ApiError(
-              "An open round cannot be rescheduled or started again.",
+              "An open round is already running.",
               409,
             );
+          }
+          if (round.status === "CLOSED" && input.action === "start") {
+            const subsequentOpen = await transaction.round.findFirst({
+              where: {
+                number: { gt: round.number },
+                status: "OPEN",
+              },
+            });
+            if (subsequentOpen) {
+              throw new ApiError(
+                `Round ${subsequentOpen.number} is currently open. Close Round ${subsequentOpen.number} before reopening Round ${round.number}.`,
+                409,
+              );
+            }
+          }
+          if (round.status === "CLOSED" && input.action === "schedule") {
+            throw new ApiError("Reopen the round before scheduling it.", 409);
           }
           if (round.number === 1) {
             const config = await transaction.eventConfig.findUnique({

@@ -15,6 +15,7 @@ const challengeSchema = z.object({
   pointValue: z.number().int().min(1).max(100000),
   hints: z.array(z.string().trim().min(1).max(1000)).max(20),
   isFinalMission: z.boolean(),
+  enabled: z.boolean().optional(),
   opensAt: z.union([z.string().datetime(), z.literal("")]),
   closesAt: z.union([z.string().datetime(), z.literal("")]),
 });
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
           finalMissionKey: input.isFinalMission ? "round-3-final" : null,
           opensAt,
           closesAt,
-          enabled: false,
+          enabled: input.enabled ?? true,
         },
         select: {
           id: true,

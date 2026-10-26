@@ -1,6 +1,7 @@
-import { handleApiError } from "@/lib/api";
+import { ApiError, handleApiError } from "@/lib/api";
 import { getAvailableChallengeInTransaction } from "@/lib/competition";
 import { prisma } from "@/lib/db";
+import { isAutomaticScoringRound } from "@/lib/scoring";
 import { assertSameOrigin } from "@/lib/security";
 import { requireActiveMembership, requireUser } from "@/lib/server";
 
@@ -19,6 +20,12 @@ export async function POST(
           transaction,
           id,
         );
+        if (!isAutomaticScoringRound(challenge.round.number)) {
+          throw new ApiError(
+            "Round 1 challenges are available on the external contest only.",
+            403,
+          );
+        }
         const timer = await transaction.teamChallengeTimer.upsert({
           where: {
             teamId_challengeId: {

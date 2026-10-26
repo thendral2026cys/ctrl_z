@@ -6,6 +6,7 @@ import {
   getAvailableChallengeInTransaction,
 } from "@/lib/competition";
 import { prisma } from "@/lib/db";
+import { isAutomaticScoringRound } from "@/lib/scoring";
 import { assertSameOrigin, verifyFlag } from "@/lib/security";
 import { enforceFlagAttemptLimit } from "@/lib/rate-limit";
 import { requireActiveMembership, requireUser } from "@/lib/server";
@@ -25,6 +26,9 @@ export async function POST(
     const { id } = await context.params;
     const input = submissionSchema.parse(await readJson(request));
     const challenge = await getAvailableChallenge(id);
+    if (!isAutomaticScoringRound(challenge.round.number)) {
+      throw new ApiError("Challenge scoring is available in Rounds 2 and 3 only.", 403);
+    }
 
     const timer = await prisma.teamChallengeTimer.findUnique({
       where: {
@@ -39,31 +43,23 @@ export async function POST(
       throw new ApiError("Open the challenge before submitting a flag.", 409);
     }
 
-    const existingSolve = await prisma.challengeSolve.findUnique({
-      where: {
-        teamId_challengeId: {
-          teamId: membership.teamId,
-          challengeId: challenge.id,
-        },
-      },
-    });
-
-    if (existingSolve) {
-      return Response.json({
-        correct: true,
-        alreadySolved: true,
-        pointsAwarded: 0,
-      });
-    }
-
-    await enforceFlagAttemptLimit(membership.teamId, challenge.id);
-
     try {
+      // The rate-limit check is performed *inside* the Serializable transaction
+      // so that the counter increment and the solve creation are atomic. This
+      // prevents two concurrent requests from both passing the limit check
+      // before either commit, and avoids burning rate-limit slots for challenges
+      // that are discovered to be already solved inside the transaction.
       const result = await prisma.$transaction(async (transaction) => {
         const currentChallenge = await getAvailableChallengeInTransaction(
           transaction,
           challenge.id,
         );
+        if (!isAutomaticScoringRound(currentChallenge.round.number)) {
+          throw new ApiError(
+            "Challenge scoring is available in Rounds 2 and 3 only.",
+            403,
+          );
+        }
         const solved = await transaction.challengeSolve.findUnique({
           where: {
             teamId_challengeId: {
@@ -75,6 +71,14 @@ export async function POST(
         if (solved) {
           return { correct: true, alreadySolved: true, pointsAwarded: 0 };
         }
+
+        // Enforce rate limit after the already-solved check so we don't burn
+        // slots when a concurrent request already submitted the correct flag.
+        await enforceFlagAttemptLimit(
+          transaction,
+          membership.teamId,
+          currentChallenge.id,
+        );
 
         if (!verifyFlag(input.flag, currentChallenge.flagDigest)) {
           await transaction.flagAttempt.create({
@@ -99,7 +103,7 @@ export async function POST(
           return { correct: false, alreadySolved: false, pointsAwarded: 0 };
         }
 
-        await transaction.challengeSolve.create({
+        const solve = await transaction.challengeSolve.create({
           data: {
             teamId: membership.teamId,
             challengeId: currentChallenge.id,
@@ -123,13 +127,18 @@ export async function POST(
             roundId: currentChallenge.roundId,
             challengeId: currentChallenge.id,
             action: "CHALLENGE_SOLVED",
-            details: { pointsAwarded: currentChallenge.pointValue },
+            details: {
+              solvingUserId: session.user.id,
+              pointsAwarded: currentChallenge.pointValue,
+              solvedAt: solve.solvedAt.toISOString(),
+            },
           },
         });
         return {
           correct: true,
           alreadySolved: false,
           pointsAwarded: currentChallenge.pointValue,
+          solvedAt: solve.solvedAt,
           finalMissionComplete: currentChallenge.isFinalMission,
         };
       }, { isolationLevel: "Serializable" });

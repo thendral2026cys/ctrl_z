@@ -1,0 +1,7 @@
+ALTER TABLE "Team"
+ADD COLUMN "roundOneScore" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "ScoreAdjustment"
+ADD COLUMN "roundNumber" INTEGER,
+ADD COLUMN "previousScore" INTEGER,
+ADD COLUMN "newScore" INTEGER;
