@@ -2,7 +2,7 @@ import { z } from "zod";
 import { handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 
 const reviewUpdateSchema = z.object({
   status: z.enum(["OPEN", "REVIEWED", "CLOSED"]),
@@ -15,7 +15,7 @@ export async function PATCH(
 ) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const { id } = await context.params;
     const input = reviewUpdateSchema.parse(await readJson(request));
 

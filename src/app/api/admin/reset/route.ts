@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 
 const resetSchema = z.object({
   confirmation: z.literal("RESET VIPERWOLF"),
@@ -11,15 +11,20 @@ const resetSchema = z.object({
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     resetSchema.parse(await readJson(request));
 
     const deleted = await prisma.$transaction(async (transaction) => {
       const [teamCount, participantCount] = await Promise.all([
         transaction.team.count(),
-        transaction.user.count({ where: { role: { not: "ADMIN" } } }),
+        transaction.user.count({
+          where: { role: { notIn: ["ADMIN", "MAIN_ADMIN"] } },
+        }),
       ]);
 
+      await transaction.$executeRawUnsafe(
+        "SET LOCAL viperwolf.allow_admin_delete = 'true'",
+      );
       await transaction.ruleReview.deleteMany();
       await transaction.finalSubmission.deleteMany();
       const scoreAdjustments = await transaction.scoreAdjustment.deleteMany();
@@ -31,7 +36,7 @@ export async function POST(request: Request) {
       const activityLogs = await transaction.activityLog.deleteMany();
       await transaction.team.deleteMany();
       await transaction.user.deleteMany({
-        where: { role: { not: "ADMIN" } },
+        where: { role: { notIn: ["ADMIN", "MAIN_ADMIN"] } },
       });
 
       await transaction.activityLog.create({

@@ -2,7 +2,7 @@ import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
 import { calculateTeamScore } from "@/lib/scoring";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 import { z } from "zod";
 
 const restoreSchema = z.object({
@@ -16,7 +16,7 @@ export async function POST(
 ) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const { id } = await context.params;
     const input = restoreSchema.parse(await readJson(request));
 

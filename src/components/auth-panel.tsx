@@ -193,8 +193,8 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                 </span>
               </div>
               <p className="entry-hint">
-                Your Google account is used to verify your identity. No
-                password is stored here.
+                Sign in with Google, or use an email and password issued by
+                your administrator. Public password registration is disabled.
               </p>
               <button
                 className="google-button"
@@ -256,7 +256,7 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                 style={{ marginTop: 14 }}
               >
                 <div className="field">
-                  <label htmlFor="manual-login-email">Administrator login ID</label>
+                  <label htmlFor="manual-login-email">Manual login ID (email)</label>
                   <input
                     className="input"
                     id="manual-login-email"
@@ -282,7 +282,7 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                   disabled={manualBusy}
                   type="submit"
                 >
-                  {manualBusy ? "Signing in…" : "Administrator manual sign-in"}
+                  {manualBusy ? "Signing in…" : "                  Manual sign-in"}
                 </button>
               </form>
             </div>

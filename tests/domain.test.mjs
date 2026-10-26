@@ -18,6 +18,7 @@ import {
   canAdminRestartChallenge,
   calculateTeamScore,
   isAutomaticScoringRound,
+  rankTeams,
 } from "../src/lib/scoring.ts";
 
 test("flag answers are stored as keyed digests and compared exactly", () => {
@@ -160,4 +161,30 @@ test("challenge restart overrides require an open or scheduled Round 2 or 3", ()
   assert.equal(canAdminRestartChallenge(1, "OPEN"), false);
   assert.equal(canAdminRestartChallenge(2, "CLOSED"), false);
   assert.equal(canAdminRestartChallenge(3, "LOCKED"), false);
+});
+
+test("leaderboard ranks ties consistently and skips rank numbers after ties", () => {
+  const ranked = rankTeams([
+    { id: "b", name: "Bravo", score: 100 },
+    { id: "a", name: "Alpha", score: 100 },
+    { id: "d", name: "Delta", score: 60 },
+    { id: "c", name: "Charlie", score: 80 },
+  ]);
+
+  assert.deepEqual(
+    ranked.map(({ id, rank }) => ({ id, rank })),
+    [
+      { id: "a", rank: 1 },
+      { id: "b", rank: 1 },
+      { id: "c", rank: 3 },
+      { id: "d", rank: 4 },
+    ],
+  );
+  assert.deepEqual(
+    rankTeams([
+      { id: "zero-b", name: "B", score: 0 },
+      { id: "zero-a", name: "A", score: 0 },
+    ]).map((team) => team.rank),
+    [1, 1],
+  );
 });

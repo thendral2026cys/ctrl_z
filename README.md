@@ -2,7 +2,7 @@
 
 A Next.js application for running the VIPERWOLF team competition. It provides Google OAuth sign-in, teams of up to four, organizer-configurable rounds and challenges, team-shared timers and scoring, private evidence and submissions, and an organizer audit console.
 
-The application intentionally does not invent official story text, flags, AI policy, or video links. Organizers configure those materials in the admin console.
+The application intentionally does not invent official story text, flags, AI policy, or video links. Organizers configure those materials in the admin console. The verified `thendralcys@gmail.com` account is the designated main administrator; all other administrators have restricted organizer access.
 
 ## Requirements
 
@@ -76,7 +76,7 @@ Start the application:
    npm run dev
    ```
 
-Open `http://localhost:3000` and choose **Continue with Google**. The Google account email must match `ADMIN_EMAIL` to complete the one-time initial organizer bootstrap with `ADMIN_BOOTSTRAP_TOKEN`, and bootstrap is rejected once an administrator already exists. Participants can continue to sign in with Google and create or join a team. Administrators can also create email/password administrator accounts from the organizer console; public password registration is disabled.
+Open `http://localhost:3000` and choose **Continue with Google** or sign in with an email/password login issued by the main administrator. The verified `thendralcys@gmail.com` account receives main-administrator access. Participants can create or join a team after signing in. Public email/password registration is disabled; only the main administrator can issue manual login credentials or grant administrator access.
 
 Team leaders can use **Team code** in the dashboard navigation to display and copy an invite code. Generating a new code invalidates the team's previous invite code.
 
@@ -93,7 +93,7 @@ All event schedules and displayed timestamps permanently use India Standard Time
 5. Copy the generated client ID and client secret into `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `.env`, then restart the app. Keep the secret private. Both values are required to enable Google sign-in; administrators can still use their separately provisioned email/password login.
 6. In Google Cloud Console, add the deployed site to **Authorized JavaScript origins** as well (for example `http://localhost:3000` for local development). For production, use the same HTTPS origin as `APP_URL`.
 
-Google OAuth is available to participants. Email/password sign-in is restricted to administrator accounts created or provisioned by an existing administrator. Public email/password sign-up is disabled.
+Google OAuth remains available to participants. Email/password sign-in is available to provisioned participant and administrator accounts. Credentials are issued by the main administrator only. Public email/password sign-up is disabled.
 
 ## Organizer content and event preparation
 
@@ -115,9 +115,11 @@ The seed creates only round structure and default event configuration; it does n
 - Participants see the Round 1 external contest link, not in-app Round 1 challenge content. The Round 2 and Round 3 organizer workspace provides three non-persistent setup slots per round; a challenge and its points are created only when an administrator saves it.
 - Administrators can restart a Round 2 or Round 3 challenge to publish it immediately and clear its challenge-level schedule. The parent round must still be open or scheduled; restarting a challenge does not bypass round ordering or round closures.
 - Administrators can restore removed participants, with any removal score deduction reversed and the action recorded in the audit log. Restoration is blocked when the team already has four active members.
-- Only administrators can promote an existing account or create a manual email/password administrator login. Passwords are hashed by Better Auth and are not written to audit logs.
+- Only the main administrator can promote an existing account or create manual email/password logins for participants and administrators. Passwords are hashed by Better Auth and are not written to audit logs.
+- The verified `thendralcys@gmail.com` account is the sole main administrator. Other admins can view team activity logs, manage challenges, and make audited team-score adjustments. Only the main administrator can configure rounds/events, enter Round 1 scores, manage users or members, review rule reports, view final submissions, or reset competition data. These boundaries are enforced by server-side authorization.
 - Team names in the participant activity log filter to that team's full activity history, loaded in pages of 100 entries.
 - The admin-only full competition reset removes teams, participant accounts, scores, challenge attempt/solve history, submissions, reviews, timers, and earlier activity logs. It preserves administrator accounts and event/challenge configuration, requires typing `RESET VIPERWOLF`, and writes a new audit entry for the reset.
+- `/leaderboard` provides the full team ranking table and a top-10 score chart. Tied teams share competition ranks (for example, 1, 1, 3); display order within a tie is deterministic by team name.
 - Rounds 2 and 3 award the configured challenge points only after the server verifies a correct flag. A challenge awards points once per team; repeat submissions do not award points again. The solve record identifies the team member and server-side solve time.
 - Team members and team leaders cannot enter or modify scores. Round 1 and administrator adjustments are not participant-facing controls.
 

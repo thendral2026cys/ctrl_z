@@ -6,7 +6,7 @@ import {
   allocateRoundOneScore,
   calculateTeamScore,
 } from "@/lib/scoring";
-import { requireAdmin } from "@/lib/server";
+import { requireAdmin, requireMainAdmin } from "@/lib/server";
 
 const scoreSchema = z.union([
   z
@@ -35,6 +35,9 @@ export async function POST(request: Request) {
     assertSameOrigin(request);
     const session = await requireAdmin(request.headers);
     const input = scoreSchema.parse(await readJson(request));
+    if ("score" in input) {
+      await requireMainAdmin(request.headers);
+    }
 
     const result = await prisma.$transaction(async (transaction) => {
       const team = await transaction.team.findUnique({

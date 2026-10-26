@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin, isSafeHttpsUrl } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 
 const roundChangeSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start") }),
@@ -27,7 +27,7 @@ export async function PATCH(
 ) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const { id } = await context.params;
     const input = roundChangeSchema.parse(await readJson(request));
 

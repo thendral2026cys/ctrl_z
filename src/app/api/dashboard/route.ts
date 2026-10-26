@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { handleApiError } from "@/lib/api";
-import { getTeamScore, isRoundAvailable } from "@/lib/competition";
+import {
+  getRankedTeamLeaderboard,
+  getTeamScore,
+  isRoundAvailable,
+} from "@/lib/competition";
 import { prisma } from "@/lib/db";
 import { calculateTeamScore } from "@/lib/scoring";
 import { EVENT_TIME_ZONE } from "@/lib/time";
@@ -36,34 +40,7 @@ export async function GET(request: Request) {
       throw new Error("Event setup is incomplete: run the database seed.");
     }
 
-    const teams = await prisma.team.findMany({
-      select: {
-        id: true,
-        name: true,
-        roundOneScore: true,
-        challengeSolves: {
-          where: { challenge: { round: { number: { in: [2, 3] } } } },
-          select: { pointsAwarded: true },
-        },
-        scoreAdjustments: {
-          where: { roundNumber: null },
-          select: { delta: true },
-        },
-      },
-    });
-
-    const leaderboard = teams
-      .map((team) => ({
-        id: team.id,
-        name: team.name,
-        score: calculateTeamScore(
-          team.roundOneScore,
-          team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0),
-          team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
-        ),
-      }))
-      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
-      .slice(0, 20);
+    const leaderboard = await getRankedTeamLeaderboard();
 
     const activeMembership = membership && !membership.removedAt ? membership : null;
     const teamScore = activeMembership
@@ -83,7 +60,8 @@ export async function GET(request: Request) {
     const roundData = rounds.map((round, index) => {
       const previous = index > 0 ? rounds[index - 1] : null;
       const available = isRoundAvailable(round, previous);
-      const isAdmin = session.user.role === "ADMIN";
+      const isAdmin =
+        session.user.role === "ADMIN" || session.user.role === "MAIN_ADMIN";
       const participantCanSeeRound = Boolean(
         round.number !== 1 &&
           activeMembership &&
@@ -256,8 +234,10 @@ export async function GET(request: Request) {
       ),
     );
 
+    const isMainAdmin = session.user.role === "MAIN_ADMIN";
+    const isAdmin = isMainAdmin || session.user.role === "ADMIN";
     const adminData =
-      session.user.role === "ADMIN"
+      isAdmin
         ? await Promise.all([
             prisma.team.findMany({
               include: {
@@ -290,22 +270,28 @@ export async function GET(request: Request) {
                 challenge: { select: { title: true } },
               },
             }),
-            prisma.finalSubmission.findMany({
-              include: { team: { select: { name: true } } },
-              orderBy: { submittedAt: "desc" },
-            }),
-            prisma.ruleReview.findMany({
-              take: 100,
-              include: {
-                team: { select: { name: true } },
-                createdBy: { select: { name: true } },
-              },
-              orderBy: { createdAt: "desc" },
-            }),
-            prisma.user.findMany({
-              select: { id: true, name: true, email: true, role: true },
-              orderBy: { email: "asc" },
-            }),
+            isMainAdmin
+              ? prisma.finalSubmission.findMany({
+                  include: { team: { select: { name: true } } },
+                  orderBy: { submittedAt: "desc" },
+                })
+              : Promise.resolve([]),
+            isMainAdmin
+              ? prisma.ruleReview.findMany({
+                  take: 100,
+                  include: {
+                    team: { select: { name: true } },
+                    createdBy: { select: { name: true } },
+                  },
+                  orderBy: { createdAt: "desc" },
+                })
+              : Promise.resolve([]),
+            isMainAdmin
+              ? prisma.user.findMany({
+                  select: { id: true, name: true, email: true, role: true },
+                  orderBy: { email: "asc" },
+                })
+              : Promise.resolve([]),
           ])
         : null;
 
@@ -318,7 +304,7 @@ export async function GET(request: Request) {
         team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0),
         team.scoreAdjustments.reduce((total, adjustment) => total + adjustment.delta, 0),
       ),
-      members: team.memberships.map((item) => ({
+      members: isMainAdmin ? team.memberships.map((item) => ({
         id: item.id,
         userId: item.userId,
         name: item.user.name,
@@ -326,7 +312,7 @@ export async function GET(request: Request) {
         role: item.role,
         userRole: item.user.role,
         removedAt: item.removedAt,
-      })),
+      })) : [],
     }));
 
     const adminActivity = adminData?.[1].map((entry) => ({
@@ -341,7 +327,10 @@ export async function GET(request: Request) {
           email: session.user.email,
           role: session.user.role,
         },
-        needsTeam: !membership && session.user.role !== "ADMIN",
+        needsTeam:
+          !membership &&
+          session.user.role !== "ADMIN" &&
+          session.user.role !== "MAIN_ADMIN",
         membershipRemoved: Boolean(membership?.removedAt),
         team: activeMembership
           ? {
@@ -370,16 +359,34 @@ export async function GET(request: Request) {
         },
         rounds: roundData,
         finalMissionComplete,
-        leaderboard,
+        leaderboard: leaderboard.slice(0, 20),
         finalSubmission: ownSubmission,
         admin: adminData
           ? {
+              isMainAdmin,
               teams: adminTeams,
               activity: adminActivity,
               finalSubmissions: adminData[2],
               reviews: adminData[3],
               users: adminData[4],
-              config: { ...config, eventTimezone: EVENT_TIME_ZONE },
+              config: isMainAdmin
+                ? { ...config, eventTimezone: EVENT_TIME_ZONE }
+                : {
+                    promoOneUrl: null,
+                    promoTwoUrl: null,
+                    externalContestUrl: null,
+                    aiPolicy: "",
+                    eventTimezone: EVENT_TIME_ZONE,
+                    climaxVideoUrl: null,
+                    climaxAvailableAt: null,
+                    finalLinkOneLabel: "Initial promotional video",
+                    finalLinkOneDescription: "",
+                    finalLinkTwoLabel: "Story reveal video",
+                    finalLinkTwoDescription: "",
+                    finalLinkThreeLabel: "Final climax video",
+                    finalLinkThreeDescription: "",
+                    finalSubmissionEnabled: false,
+                  },
             }
           : null,
       },

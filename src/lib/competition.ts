@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { prisma } from "@/lib/db";
-import { calculateTeamScore } from "@/lib/scoring";
+import { calculateTeamScore, rankTeams } from "@/lib/scoring";
 
 export function isRoundAvailable(
   round: {
@@ -152,5 +152,41 @@ export async function getTeamScore(teamId: string) {
     team.roundOneScore,
     solves._sum.pointsAwarded ?? 0,
     adjustments._sum.delta ?? 0,
+  );
+}
+
+export async function getRankedTeamLeaderboard() {
+  const teams = await prisma.team.findMany({
+    select: {
+      id: true,
+      name: true,
+      roundOneScore: true,
+      challengeSolves: {
+        where: { challenge: { round: { number: { in: [2, 3] } } } },
+        select: { pointsAwarded: true },
+      },
+      scoreAdjustments: {
+        where: { roundNumber: null },
+        select: { delta: true },
+      },
+    },
+  });
+
+  return rankTeams(
+    teams.map((team) => ({
+      id: team.id,
+      name: team.name,
+      score: calculateTeamScore(
+        team.roundOneScore,
+        team.challengeSolves.reduce(
+          (total, solve) => total + solve.pointsAwarded,
+          0,
+        ),
+        team.scoreAdjustments.reduce(
+          (total, adjustment) => total + adjustment.delta,
+          0,
+        ),
+      ),
+    })),
   );
 }

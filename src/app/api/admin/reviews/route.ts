@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 
 const reviewSchema = z.object({
   teamId: z.string().min(1),
@@ -14,7 +14,7 @@ const reviewSchema = z.object({
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const input = reviewSchema.parse(await readJson(request));
     const team = await prisma.team.findUnique({
       where: { id: input.teamId },

@@ -4,31 +4,35 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { MAIN_ADMIN_EMAIL, requireMainAdmin } from "@/lib/server";
 
 const manualAdminSchema = z.object({
   name: z.string().trim().min(1).max(100),
   email: z.string().trim().email().max(254),
   password: z.string().min(12).max(128),
+  role: z.enum(["PARTICIPANT", "ADMIN"]).default("PARTICIPANT"),
 });
 
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const input = manualAdminSchema.parse(await readJson(request));
     const email = input.email.toLowerCase();
+    if (email === MAIN_ADMIN_EMAIL) {
+      throw new ApiError(
+        "The main administrator's reserved email cannot be provisioned through this form.",
+        409,
+      );
+    }
     const passwordHash = await hashPassword(input.password);
     const result = await prisma.$transaction(async (transaction) => {
       const existingUser = await transaction.user.findUnique({
         where: { email },
         select: { id: true, role: true },
       });
-      if (existingUser && existingUser.role !== "ADMIN") {
-        throw new ApiError(
-          "Promote this existing account before creating its manual administrator login.",
-          409,
-        );
+      if (existingUser?.role === "MAIN_ADMIN") {
+        throw new ApiError("The main administrator account cannot be reconfigured here.", 409);
       }
 
       const userId = existingUser?.id ?? randomUUID();
@@ -44,6 +48,12 @@ export async function POST(request: Request) {
       }
 
       if (existingUser) {
+        if (input.role === "ADMIN" && existingUser.role !== "ADMIN") {
+          await transaction.user.update({
+            where: { id: userId },
+            data: { role: "ADMIN" },
+          });
+        }
         await transaction.account.create({
           data: {
             id: randomUUID(),
@@ -60,7 +70,7 @@ export async function POST(request: Request) {
             name: input.name,
             email,
             emailVerified: true,
-            role: "ADMIN",
+            role: input.role,
             accounts: {
               create: {
                 id: randomUUID(),
@@ -81,11 +91,12 @@ export async function POST(request: Request) {
           details: {
             targetUserId: userId,
             targetEmail: email,
-            addedToExistingAdmin: Boolean(existingUser),
+            accountRole: existingUser?.role === "ADMIN" ? "ADMIN" : input.role,
+            addedToExistingAccount: Boolean(existingUser),
           },
         },
       });
-      return { userId, addedToExistingAdmin: Boolean(existingUser) };
+      return { userId, addedToExistingAccount: Boolean(existingUser) };
     });
 
     return Response.json({ created: true, ...result }, { status: 201 });

@@ -34,3 +34,26 @@ export function canAdminRestartChallenge(
     ["OPEN", "SCHEDULED"].includes(roundStatus)
   );
 }
+
+export function rankTeams<T extends { id: string; name: string; score: number }>(
+  teams: T[],
+) {
+  const sorted = [...teams].sort(
+    (left, right) =>
+      right.score - left.score ||
+      left.name.localeCompare(right.name, "en", { sensitivity: "base" }) ||
+      left.name.localeCompare(right.name) ||
+      left.id.localeCompare(right.id),
+  );
+
+  let previousScore: number | undefined;
+  let previousRank = 0;
+
+  return sorted.map((team, index) => {
+    const rank =
+      team.score === previousScore ? previousRank : index + 1;
+    previousScore = team.score;
+    previousRank = rank;
+    return { ...team, rank };
+  });
+}

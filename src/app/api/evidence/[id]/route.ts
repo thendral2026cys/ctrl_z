@@ -22,7 +22,10 @@ export async function GET(
 ) {
   try {
     const session = await requireUser(request.headers);
-    if (session.user.role !== "ADMIN") {
+    if (
+      session.user.role !== "ADMIN" &&
+      session.user.role !== "MAIN_ADMIN"
+    ) {
       await requireActiveMembership(session.user.id);
     }
     const { id } = await context.params;
@@ -39,7 +42,10 @@ export async function GET(
     if (!file) {
       throw new ApiError("Evidence file not found.", 404);
     }
-    if (session.user.role !== "ADMIN") {
+    if (
+      session.user.role !== "ADMIN" &&
+      session.user.role !== "MAIN_ADMIN"
+    ) {
       const challenge = await getAvailableChallenge(file.challengeId);
       if (!isAutomaticScoringRound(challenge.round.number)) {
         throw new ApiError(

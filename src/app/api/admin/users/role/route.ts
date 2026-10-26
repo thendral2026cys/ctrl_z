@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 
 const promoteSchema = z.object({
   userId: z.string().min(1).max(200),
@@ -11,7 +11,7 @@ const promoteSchema = z.object({
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const { userId } = promoteSchema.parse(await readJson(request));
     if (userId === session.user.id) {
       throw new ApiError("You already have administrator access.", 400);
@@ -23,7 +23,7 @@ export async function POST(request: Request) {
         select: { id: true, email: true, role: true },
       });
       if (!user) throw new ApiError("Account not found.", 404);
-      if (user.role === "ADMIN") {
+      if (user.role === "ADMIN" || user.role === "MAIN_ADMIN") {
         throw new ApiError("This account is already an administrator.", 409);
       }
 

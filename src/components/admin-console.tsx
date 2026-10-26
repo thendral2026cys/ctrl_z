@@ -55,6 +55,7 @@ type ConfigInput = {
   finalLinkThreeDescription: string;
 };
 type AdminInput = {
+  isMainAdmin: boolean;
   teams: {
     id: string;
     name: string;
@@ -112,10 +113,12 @@ type AdminInput = {
 export function AdminConsole({
   admin,
   rounds,
+  isMainAdmin,
   onUpdated,
 }: {
   admin: AdminInput;
   rounds: RoundInput[];
+  isMainAdmin: boolean;
   onUpdated: () => void;
 }) {
   const [message, setMessage] = useState("");
@@ -348,6 +351,7 @@ export function AdminConsole({
         name: String(form.get("name")),
         email: String(form.get("email")),
         password: String(form.get("password")),
+        role: String(form.get("role")),
       });
       formElement.reset();
     });
@@ -430,6 +434,7 @@ export function AdminConsole({
   const participantActivity = admin.activity.filter(
     (entry) =>
       entry.participantRole !== "ADMIN" &&
+      entry.participantRole !== "MAIN_ADMIN" &&
       !entry.action.startsWith("CHALLENGE_") &&
       !entry.action.startsWith("ROUND_") &&
       !entry.action.startsWith("CONFIG_") &&
@@ -455,9 +460,9 @@ export function AdminConsole({
       <div className="panel-heading">
         <div>
           <div className="eyebrow">Organizer workspace</div>
-          <h2>Event controls and audit</h2>
+          <h2>{isMainAdmin ? "Main administrator workspace" : "Admin workspace"}</h2>
         </div>
-        <span className="badge">ADMIN</span>
+        <span className="badge">{isMainAdmin ? "MAIN ADMIN" : "ADMIN"}</span>
       </div>
       <p className="subtle">
         This workspace contains private team activity. Do not publish evidence
@@ -469,12 +474,14 @@ export function AdminConsole({
         </p>
       )}
 
+      {isMainAdmin && (
+      <>
       <details className="details">
         <summary>Administrator access and manual login accounts</summary>
         <p className="subtle" style={{ marginTop: 10 }}>
-          Only administrators can create administrator email/password accounts
-          or promote an existing account. Email/password registration is closed
-          to the public.
+          Create participant or admin login IDs and passwords here. Only the
+          main administrator can grant admin access. Public password
+          registration is disabled.
         </p>
         <form
           className="form-grid"
@@ -482,7 +489,7 @@ export function AdminConsole({
           style={{ marginTop: 14 }}
         >
           <div className="field">
-            <label htmlFor="admin-login-name">Administrator name</label>
+            <label htmlFor="admin-login-name">Account name</label>
             <input
               className="input"
               id="admin-login-name"
@@ -492,7 +499,7 @@ export function AdminConsole({
             />
           </div>
           <div className="field">
-            <label htmlFor="admin-login-email">Login ID (email)</label>
+            <label htmlFor="admin-login-email">Manual login ID (email)</label>
             <input
               className="input"
               id="admin-login-email"
@@ -517,9 +524,21 @@ export function AdminConsole({
             />
             <span className="subtle">At least 12 characters.</span>
           </div>
+          <div className="field">
+            <label htmlFor="admin-login-role">Account access</label>
+            <select
+              className="select"
+              id="admin-login-role"
+              name="role"
+              defaultValue="PARTICIPANT"
+            >
+              <option value="PARTICIPANT">Participant</option>
+              <option value="ADMIN">Administrator</option>
+            </select>
+          </div>
           <div className="full form-actions">
             <button className="btn" disabled={busy} type="submit">
-              Create administrator login
+              Create manual login
             </button>
           </div>
         </form>
@@ -531,7 +550,9 @@ export function AdminConsole({
                 <strong>{user.name}</strong>
                 <span className="subtle">{user.email}</span>
               </div>
-              {user.role === "ADMIN" ? (
+              {user.role === "MAIN_ADMIN" ? (
+                <span className="badge">MAIN ADMIN</span>
+              ) : user.role === "ADMIN" ? (
                 <span className="badge">ADMIN</span>
               ) : (
                 <button
@@ -569,7 +590,10 @@ export function AdminConsole({
           Reset competition data
         </button>
       </details>
+      </>
+      )}
 
+      {isMainAdmin && (
       <details className="details" open>
         <summary>Event content, links, policy, and final submission</summary>
         <form className="form-grid" onSubmit={saveConfig} style={{ marginTop: 14 }}>
@@ -710,8 +734,10 @@ export function AdminConsole({
           </div>
         </form>
       </details>
+      )}
 
-      <details className="details">
+      {isMainAdmin && (
+      <details className="details" open>
         <summary>Round schedule and story-reveal videos</summary>
         <div className="card-list" style={{ marginTop: 14 }}>
           {rounds.map((round) => (
@@ -726,6 +752,7 @@ export function AdminConsole({
           ))}
         </div>
       </details>
+      )}
 
       <details className="details">
         <summary>Create challenges and add protected evidence files</summary>
@@ -953,6 +980,7 @@ export function AdminConsole({
         </div>
       </details>
 
+      {isMainAdmin && (
       <details className="details">
         <summary>Round 1 manual team score entry</summary>
         <p className="subtle">
@@ -1006,6 +1034,7 @@ export function AdminConsole({
           </div>
         </form>
       </details>
+      )}
 
       <details className="details">
         <summary>Administrator team score adjustment</summary>
@@ -1055,6 +1084,7 @@ export function AdminConsole({
         </form>
       </details>
 
+      {isMainAdmin && (
       <details className="details">
         <summary>Team roster and participant removal</summary>
         <div className="card-list" style={{ marginTop: 14 }}>
@@ -1147,7 +1177,9 @@ export function AdminConsole({
           ))}
         </div>
       </details>
+      )}
 
+      {isMainAdmin && (
       <details className="details">
         <summary>Documented rules review</summary>
         <p className="subtle">
@@ -1217,7 +1249,9 @@ export function AdminConsole({
           </div>
         )}
       </details>
+      )}
 
+      {isMainAdmin && (
       <details className="details">
         <summary>Final team submissions ({admin.finalSubmissions.length})</summary>
         <div className="card-list" style={{ marginTop: 14 }}>
@@ -1243,6 +1277,7 @@ export function AdminConsole({
           )}
         </div>
       </details>
+      )}
 
       {/* Separate Admin and Participant Log Spaces */}
       <details className="details">
@@ -1252,6 +1287,7 @@ export function AdminConsole({
             admin.activity.filter(
               (a) =>
                 a.participantRole === "ADMIN" ||
+                a.participantRole === "MAIN_ADMIN" ||
                 a.action.startsWith("CHALLENGE_") ||
                 a.action.startsWith("ROUND_") ||
                 a.action.startsWith("CONFIG_") ||
@@ -1272,6 +1308,7 @@ export function AdminConsole({
           entries={admin.activity.filter(
             (a) =>
               a.participantRole === "ADMIN" ||
+              a.participantRole === "MAIN_ADMIN" ||
               a.action.startsWith("CHALLENGE_") ||
               a.action.startsWith("ROUND_") ||
               a.action.startsWith("CONFIG_") ||
@@ -1411,7 +1448,12 @@ function ActivityTable({
                 </td>
                 <td>
                   <span
-                    className={`badge ${entry.participantRole === "ADMIN" ? "" : "green"}`}
+                    className={`badge ${
+                      entry.participantRole === "ADMIN" ||
+                      entry.participantRole === "MAIN_ADMIN"
+                        ? ""
+                        : "green"
+                    }`}
                   >
                     {entry.participantRole}
                   </span>

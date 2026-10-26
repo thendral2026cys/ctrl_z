@@ -2,7 +2,7 @@ import { z } from "zod";
 import { handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin, isSafeHttpsUrl } from "@/lib/security";
-import { requireAdmin } from "@/lib/server";
+import { requireMainAdmin } from "@/lib/server";
 import { EVENT_TIME_ZONE } from "@/lib/time";
 
 const optionalHttpsUrl = z
@@ -33,7 +33,7 @@ const configSchema = z.object({
 export async function PUT(request: Request) {
   try {
     assertSameOrigin(request);
-    const session = await requireAdmin(request.headers);
+    const session = await requireMainAdmin(request.headers);
     const input = configSchema.parse(await readJson(request));
     const config = await prisma.$transaction(async (transaction) => {
       const updated = await transaction.eventConfig.upsert({

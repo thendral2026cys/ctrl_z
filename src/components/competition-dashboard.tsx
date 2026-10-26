@@ -66,7 +66,7 @@ type DashboardData = {
   team: { id: string; name: string; memberRole: string; score: number } | null;
   config: Config;
   rounds: Round[];
-  leaderboard: { id: string; name: string; score: number }[];
+  leaderboard: { id: string; name: string; score: number; rank: number }[];
   finalMissionComplete: boolean;
   finalSubmission: {
     firstUrl: string;
@@ -77,6 +77,7 @@ type DashboardData = {
   admin: AdminData | null;
 };
 type AdminData = {
+  isMainAdmin: boolean;
   teams: {
     id: string;
     name: string;
@@ -405,11 +406,20 @@ export function CompetitionDashboard({
               </button>
             </nav>
           )}
+          <nav className="top-navigation" aria-label="Competition navigation">
+            <a className="btn-secondary" href="/leaderboard">
+              Leaderboard
+            </a>
+          </nav>
           <div className="user-area">
             <span className="subtle">
               {initialUser.name} · {data.team?.name ?? "Organizer"}
             </span>
-            {initialUser.role === "ADMIN" && <span className="badge">ADMIN</span>}
+            {data.user.role === "MAIN_ADMIN" ? (
+              <span className="badge">MAIN ADMIN</span>
+            ) : data.user.role === "ADMIN" ? (
+              <span className="badge">ADMIN</span>
+            ) : null}
             <button className="btn-secondary" onClick={signOut} type="button">
               Sign out
             </button>
@@ -587,7 +597,8 @@ export function CompetitionDashboard({
               <div className="card-list">
                 {data.rounds.map((round) => {
                   const externalOnly =
-                    data.user.role !== "ADMIN" && round.number === 1;
+                    !["ADMIN", "MAIN_ADMIN"].includes(data.user.role) &&
+                    round.number === 1;
 
                   return (
                   <article className="round-card" key={round.id}>
@@ -808,15 +819,15 @@ export function CompetitionDashboard({
                   <table className="data-table">
                     <thead>
                       <tr>
-                        <th>#</th>
+                        <th>Rank</th>
                         <th>Team</th>
                         <th>Points</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {data.leaderboard.map((team, index) => (
+                      {data.leaderboard.slice(0, 20).map((team) => (
                         <tr key={team.id}>
-                          <td className="rank">{index + 1}</td>
+                          <td className="rank">{team.rank}</td>
                           <td>{team.name}</td>
                           <td>{team.score}</td>
                         </tr>
@@ -828,6 +839,9 @@ export function CompetitionDashboard({
               <p className="subtle" style={{ marginBottom: 0 }}>
                 Public standings show team names and totals only.
               </p>
+              <a className="btn-secondary" href="/leaderboard">
+                View full leaderboard and graph
+              </a>
             </aside>
 
             <section className="panel span-6">
@@ -912,6 +926,7 @@ export function CompetitionDashboard({
             <AdminConsole
               admin={data.admin}
               rounds={data.rounds}
+              isMainAdmin={data.admin.isMainAdmin}
               onUpdated={refresh}
             />
           )}

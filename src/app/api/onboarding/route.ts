@@ -34,6 +34,7 @@ export async function POST(request: Request) {
       configuredAdmin &&
       session.user.email.toLowerCase() === configuredAdmin &&
       session.user.role !== "ADMIN" &&
+      session.user.role !== "MAIN_ADMIN" &&
       matchesSecret(
         input.adminBootstrapToken ?? "",
         process.env.ADMIN_BOOTSTRAP_TOKEN,
@@ -54,7 +55,9 @@ export async function POST(request: Request) {
             );
           }
           if (
-            await transaction.user.count({ where: { role: "ADMIN" } })
+            await transaction.user.count({
+              where: { role: { in: ["ADMIN", "MAIN_ADMIN"] } },
+            })
           ) {
             throw new ApiError(
               "An administrator already exists. Only an administrator can grant additional administrator access.",
@@ -91,7 +94,13 @@ export async function POST(request: Request) {
 
     // session.user.role reflects the role at session creation time and is not
     // updated by the bootstrap above, so we also check justBootstrapped here.
-    if ((session.user.role === "ADMIN" || justBootstrapped) && !input.teamName && !input.inviteCode) {
+    if (
+      (session.user.role === "ADMIN" ||
+        session.user.role === "MAIN_ADMIN" ||
+        justBootstrapped) &&
+      !input.teamName &&
+      !input.inviteCode
+    ) {
       return Response.json({ role: "ADMIN" });
     }
 
