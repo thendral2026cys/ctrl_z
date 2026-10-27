@@ -31,6 +31,7 @@ type RoundInput = {
     isFinalMission: boolean;
     opensAt: string | null;
     closesAt: string | null;
+    solveCount: number;
     files: {
       id: string;
       fileName: string;
@@ -46,13 +47,6 @@ type ConfigInput = {
   eventTimezone: string;
   climaxVideoUrl: string | null;
   climaxAvailableAt: string | null;
-  finalSubmissionEnabled: boolean;
-  finalLinkOneLabel: string;
-  finalLinkOneDescription: string;
-  finalLinkTwoLabel: string;
-  finalLinkTwoDescription: string;
-  finalLinkThreeLabel: string;
-  finalLinkThreeDescription: string;
 };
 type AdminInput = {
   isMainAdmin: boolean;
@@ -61,6 +55,9 @@ type AdminInput = {
     name: string;
     score: number;
     roundOneScore: number;
+    leaderboardHidden: boolean;
+    disqualifiedAt: string | null;
+    disqualificationReason: string | null;
     members: {
       id: string;
       userId: string;
@@ -82,14 +79,6 @@ type AdminInput = {
     details: unknown;
     createdAt: string;
   }[];
-  finalSubmissions: {
-    id: string;
-    firstUrl: string;
-    secondUrl: string;
-    thirdUrl: string;
-    submittedAt: string;
-    team: { name: string };
-  }[];
   reviews: {
     id: string;
     teamId: string;
@@ -106,8 +95,40 @@ type AdminInput = {
     name: string;
     email: string;
     role: string;
+    disabledAt: string | null;
+    disabledReason: string | null;
+    teamId: string | null;
+    teamName: string | null;
+    membershipRemoved: boolean;
   }[];
   config: ConfigInput;
+};
+type ChallengeResults = {
+  totalSolved: number;
+  totalIncorrectAttempts: number;
+  solves: {
+    teamName: string;
+    solverName: string;
+    solverEmail: string;
+    pointsAwarded: number;
+    solvedAt: string;
+    elapsedSeconds: number | null;
+    incorrectAttempts: number;
+  }[];
+  incorrectAttempts: {
+    teamName: string;
+    participantName: string;
+    participantEmail: string;
+    attemptedAt: string;
+  }[];
+  writeups: {
+    teamName: string;
+    participantName: string;
+    participantEmail: string;
+    content: string;
+    createdAt: string;
+    updatedAt: string;
+  }[];
 };
 
 export function AdminConsole({
@@ -126,10 +147,18 @@ export function AdminConsole({
   const [busy, setBusy] = useState(false);
   const [latestChallengeId, setLatestChallengeId] = useState("");
   const [selectedChallengeRoundId, setSelectedChallengeRoundId] = useState(
-    () => rounds.find((round) => round.number === 2)?.id ?? rounds[0]?.id ?? "",
+    () =>
+      rounds.find((round) => round.number === 2)?.id ??
+      rounds.find((round) => round.number > 1)?.id ??
+      "",
   );
   const [selectedParticipantLogTeamId, setSelectedParticipantLogTeamId] =
     useState("");
+  const [selectedAccountsTeamId, setSelectedAccountsTeamId] = useState("");
+  const [existingUsers, setExistingUsers] = useState<AdminInput["users"]>([]);
+  const [existingUsersLoading, setExistingUsersLoading] = useState(false);
+  const [existingUsersError, setExistingUsersError] = useState("");
+  const existingUsersRequestId = useRef(0);
   const [selectedTeamActivity, setSelectedTeamActivity] = useState<
     AdminInput["activity"] | null
   >(null);
@@ -289,6 +318,19 @@ export function AdminConsole({
     });
   }
 
+  async function createRound(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    await runAction(async () => {
+      await request("/api/admin/rounds", "POST", {
+        name: String(form.get("name")),
+        description: String(form.get("description") ?? ""),
+      });
+      formElement.reset();
+    });
+  }
+
   async function createReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -342,6 +384,33 @@ export function AdminConsole({
     });
   }
 
+  async function setTeamDisqualification(
+    event: FormEvent<HTMLFormElement>,
+    teamId: string,
+    disqualified: boolean,
+  ) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    if (
+      !window.confirm(
+        disqualified
+          ? "Disqualify this team? It will lose access to challenges and be removed from the leaderboard. Its history will be preserved."
+          : "Reinstate this team and restore its access to challenges?",
+      )
+    ) {
+      return;
+    }
+    await runAction(async () => {
+      await request(
+        `/api/admin/teams/${teamId}/disqualification`,
+        "PATCH",
+        { disqualified, reason: String(form.get("reason")) },
+      );
+      formElement.reset();
+    });
+  }
+
   async function createManualAdmin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
@@ -354,24 +423,93 @@ export function AdminConsole({
         role: String(form.get("role")),
       });
       formElement.reset();
+      if (selectedAccountsTeamId) {
+        await loadExistingUsers(selectedAccountsTeamId);
+      }
     });
   }
 
-  async function promoteUser(userId: string) {
-    if (!window.confirm("Grant this account administrator access?")) return;
-    await runAction(() =>
-      request("/api/admin/users/role", "POST", { userId }),
-    );
+  async function loadExistingUsers(teamId: string) {
+    const requestId = ++existingUsersRequestId.current;
+    setSelectedAccountsTeamId(teamId);
+    setExistingUsersError("");
+    if (!teamId) {
+      setExistingUsers([]);
+      setExistingUsersLoading(false);
+      return;
+    }
+
+    setExistingUsersLoading(true);
+    try {
+      const response = await fetch(
+        `/api/admin/users?teamId=${encodeURIComponent(teamId)}`,
+        { cache: "no-store" },
+      );
+      const body = (await response.json()) as {
+        users?: AdminInput["users"];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "Accounts could not be loaded.");
+      }
+      if (requestId === existingUsersRequestId.current) {
+        setExistingUsers(body.users ?? []);
+      }
+    } catch (reason) {
+      if (requestId === existingUsersRequestId.current) {
+        setExistingUsers([]);
+        setExistingUsersError(
+          reason instanceof Error ? reason.message : "Accounts could not be loaded.",
+        );
+      }
+    } finally {
+      if (requestId === existingUsersRequestId.current) {
+        setExistingUsersLoading(false);
+      }
+    }
+  }
+
+  async function manageUser(
+    event: FormEvent<HTMLFormElement>,
+    userId: string,
+    action: "update-name" | "reset-password" | "set-role" | "deactivate" | "reactivate",
+  ) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const body: Record<string, string> = { action };
+    for (const field of ["name", "password", "role", "reason"] as const) {
+      const value = form.get(field);
+      if (value !== null) body[field] = String(value);
+    }
+    if (
+      action === "deactivate" &&
+      !window.confirm("Disable this account? Its history will be preserved and active sessions ended.")
+    ) {
+      return;
+    }
+    await runAction(async () => {
+      await request(`/api/admin/users/${userId}`, "PATCH", body);
+      if (selectedAccountsTeamId) {
+        await loadExistingUsers(selectedAccountsTeamId);
+      }
+      if (action !== "update-name") formElement.reset();
+    });
   }
 
   async function resetCompetition() {
     const confirmation = window.prompt(
-      "This permanently removes teams, participant accounts, scores, challenge attempts/solves, submissions, reviews, timers, and prior activity logs. Administrator accounts and event/challenge configuration are preserved. Type RESET VIPERWOLF to continue.",
+      "This permanently clears teams, participant accounts, scores, challenge attempts/solves, and activity logs. Type RESET or RESET CTRL_Z to continue.",
     );
-    if (confirmation !== "RESET VIPERWOLF") return;
+    if (!confirmation) return;
+    const clean = confirmation.trim().toUpperCase();
+    if (clean !== "RESET" && clean !== "RESET CTRL_Z") {
+      alert("Reset cancelled: confirmation did not match 'RESET'.");
+      return;
+    }
     await runAction(() =>
       request("/api/admin/reset", "POST", {
-        confirmation,
+        confirmation: clean,
       }),
     );
   }
@@ -454,7 +592,6 @@ export function AdminConsole({
   const selectedTeamName = admin.teams.find(
     (team) => team.id === selectedParticipantLogTeamId,
   )?.name;
-
   return (
     <section className="panel">
       <div className="panel-heading">
@@ -475,13 +612,15 @@ export function AdminConsole({
       )}
 
       {isMainAdmin && (
-      <>
-      <details className="details">
-        <summary>Administrator access and manual login accounts</summary>
+        <>
+          <details className="details">
+            <summary>User management and manual login accounts</summary>
         <p className="subtle" style={{ marginTop: 10 }}>
-          Create participant or admin login IDs and passwords here. Only the
-          main administrator can grant admin access. Public password
-          registration is disabled.
+          Create and manage accounts, update names, reset passwords, and
+          deactivate or reactivate users. Existing teams, submissions, scores,
+          and audit history are preserved. Active team members must first be
+          removed from their team by the main administrator before their
+          account can be disabled.
         </p>
         <form
           className="form-grid"
@@ -524,18 +663,23 @@ export function AdminConsole({
             />
             <span className="subtle">At least 12 characters.</span>
           </div>
-          <div className="field">
-            <label htmlFor="admin-login-role">Account access</label>
-            <select
-              className="select"
-              id="admin-login-role"
-              name="role"
-              defaultValue="PARTICIPANT"
-            >
-              <option value="PARTICIPANT">Participant</option>
-              <option value="ADMIN">Administrator</option>
-            </select>
-          </div>
+          {isMainAdmin && (
+            <div className="field">
+              <label htmlFor="admin-login-role">Account access</label>
+              <select
+                className="select"
+                id="admin-login-role"
+                name="role"
+                defaultValue="PARTICIPANT"
+              >
+                <option value="PARTICIPANT">Participant</option>
+                <option value="ADMIN">Administrator</option>
+              </select>
+            </div>
+          )}
+          {!isMainAdmin && (
+            <input type="hidden" name="role" value="PARTICIPANT" />
+          )}
           <div className="full form-actions">
             <button className="btn" disabled={busy} type="submit">
               Create manual login
@@ -543,32 +687,229 @@ export function AdminConsole({
           </div>
         </form>
         <h3 style={{ marginTop: 20 }}>Existing accounts</h3>
+        <div className="field" style={{ maxWidth: 460 }}>
+          <label htmlFor="existing-accounts-team">
+            Choose a team to view its accounts
+          </label>
+          <select
+            className="select"
+            id="existing-accounts-team"
+            onChange={(event) => void loadExistingUsers(event.target.value)}
+            value={selectedAccountsTeamId}
+          >
+            <option value="">Choose a team</option>
+            {admin.teams.map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+            <option value="__unassigned__">No team / unassigned</option>
+          </select>
+        </div>
+        {existingUsersLoading && (
+          <p className="subtle" role="status">Loading selected-team accounts…</p>
+        )}
+        {existingUsersError && (
+          <p className="message error" role="alert">{existingUsersError}</p>
+        )}
         <div className="card-list">
-          {admin.users.map((user) => (
+          {!selectedAccountsTeamId && (
+            <p className="subtle">
+              Choose a team above to view its existing accounts.
+            </p>
+          )}
+          {existingUsers.map((user) => (
             <div className="link-card" key={user.id}>
               <div>
                 <strong>{user.name}</strong>
-                <span className="subtle">{user.email}</span>
+                <span className="subtle">
+                  {user.email}
+                  {user.teamName ? ` · Team: ${user.teamName}` : ""}
+                  {user.membershipRemoved ? " · removed from team" : ""}
+                  {user.disabledAt ? " · DISABLED" : ""}
+                </span>
+                {user.disabledReason && (
+                  <span className="subtle">Disabled reason: {user.disabledReason}</span>
+                )}
               </div>
-              {user.role === "MAIN_ADMIN" ? (
-                <span className="badge">MAIN ADMIN</span>
-              ) : user.role === "ADMIN" ? (
-                <span className="badge">ADMIN</span>
-              ) : (
-                <button
-                  className="btn-secondary"
-                  disabled={busy}
-                  onClick={() => void promoteUser(user.id)}
-                  type="button"
+              <span className="badge">
+                {user.role === "MAIN_ADMIN" ? "MAIN ADMIN" : user.role}
+              </span>
+              <div className="card-list">
+                <form
+                  className="inline-form"
+                  onSubmit={(event) => void manageUser(event, user.id, "update-name")}
                 >
-                  Make administrator
-                </button>
-              )}
+                  <div className="field">
+                    <label htmlFor={`user-name-${user.id}`}>Display name</label>
+                    <input
+                      className="input"
+                      id={`user-name-${user.id}`}
+                      name="name"
+                      defaultValue={user.name}
+                      maxLength={100}
+                      required
+                    />
+                  </div>
+                  <button className="btn-secondary" disabled={busy} type="submit">
+                    Save name
+                  </button>
+                </form>
+                <form
+                  className="inline-form"
+                  onSubmit={(event) =>
+                    void manageUser(event, user.id, "reset-password")
+                  }
+                >
+                  <div className="field">
+                    <label htmlFor={`user-password-${user.id}`}>
+                      Set / reset password
+                    </label>
+                    <input
+                      className="input"
+                      id={`user-password-${user.id}`}
+                      name="password"
+                      type="password"
+                      minLength={12}
+                      maxLength={128}
+                      autoComplete="new-password"
+                      placeholder="At least 12 characters"
+                      required
+                    />
+                  </div>
+                  <button className="btn-secondary" disabled={busy} type="submit">
+                    Reset password
+                  </button>
+                </form>
+                {isMainAdmin && user.role !== "MAIN_ADMIN" && (
+                  <form
+                    className="inline-form"
+                    onSubmit={(event) => void manageUser(event, user.id, "set-role")}
+                  >
+                    <div className="field">
+                      <label htmlFor={`user-role-${user.id}`}>Account role</label>
+                      <select
+                        className="select"
+                        id={`user-role-${user.id}`}
+                        name="role"
+                        defaultValue={user.role}
+                      >
+                        <option value="PARTICIPANT">Participant</option>
+                        <option value="ADMIN">Admin</option>
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label htmlFor={`user-role-reason-${user.id}`}>
+                        Role-change reason
+                      </label>
+                      <input
+                        className="input"
+                        id={`user-role-reason-${user.id}`}
+                        name="reason"
+                        minLength={3}
+                        maxLength={500}
+                        required
+                      />
+                    </div>
+                    <button className="btn-secondary" disabled={busy} type="submit">
+                      Save role
+                    </button>
+                  </form>
+                )}
+                {user.role !== "MAIN_ADMIN" &&
+                  (user.disabledAt ? (
+                    <form
+                      className="inline-form"
+                      onSubmit={(event) =>
+                        void manageUser(event, user.id, "reactivate")
+                      }
+                    >
+                      <div className="field">
+                        <label htmlFor={`user-reactivate-reason-${user.id}`}>
+                          Reactivation reason
+                        </label>
+                        <input
+                          className="input"
+                          id={`user-reactivate-reason-${user.id}`}
+                          name="reason"
+                          minLength={3}
+                          maxLength={500}
+                          required
+                        />
+                      </div>
+                      <button className="btn-secondary" disabled={busy} type="submit">
+                        Reactivate account
+                      </button>
+                    </form>
+                  ) : (
+                    <form
+                      className="inline-form"
+                      onSubmit={(event) =>
+                        void manageUser(event, user.id, "deactivate")
+                      }
+                    >
+                      <div className="field">
+                        <label htmlFor={`user-disable-reason-${user.id}`}>
+                          Deactivation reason
+                        </label>
+                        <input
+                          className="input"
+                          id={`user-disable-reason-${user.id}`}
+                          name="reason"
+                          minLength={3}
+                          maxLength={500}
+                          required
+                        />
+                      </div>
+                      <button className="btn-danger" disabled={busy} type="submit">
+                        Disable account
+                      </button>
+                    </form>
+                  ))}
+              </div>
             </div>
           ))}
-          {admin.users.length === 0 && (
-            <p className="subtle">No user accounts are available.</p>
+          {selectedAccountsTeamId &&
+            !existingUsersLoading &&
+            existingUsers.length === 0 && (
+            <p className="subtle">No accounts are listed for this team.</p>
           )}
+        </div>
+      </details>
+
+      <details className="details">
+        <summary>Leaderboard visibility</summary>
+        <p className="subtle">
+          Hiding a team removes it from participant leaderboard rankings without
+          changing its score, challenge access, or audit history.
+        </p>
+        <div className="card-list">
+          {admin.teams.map((team) => (
+            <div className="list-card" key={team.id}>
+              <div>
+                <strong>{team.name}</strong>
+                <span className="subtle">
+                  {team.leaderboardHidden ? "Hidden from leaderboard" : "Visible on leaderboard"}
+                </span>
+              </div>
+              <button
+                className="btn-secondary"
+                disabled={busy}
+                onClick={() =>
+                  void runAction(() =>
+                    request(
+                      `/api/admin/teams/${team.id}/leaderboard-visibility`,
+                      "PATCH",
+                      { hidden: !team.leaderboardHidden },
+                    ),
+                  )
+                }
+                type="button"
+              >
+                {team.leaderboardHidden ? "Show team" : "Hide team"}
+              </button>
+            </div>
+          ))}
         </div>
       </details>
 
@@ -590,12 +931,9 @@ export function AdminConsole({
           Reset competition data
         </button>
       </details>
-      </>
-      )}
 
-      {isMainAdmin && (
       <details className="details" open>
-        <summary>Event content, links, policy, and final submission</summary>
+        <summary>Event content, links, and policy</summary>
         <form className="form-grid" onSubmit={saveConfig} style={{ marginTop: 14 }}>
           <div className="field">
             <label htmlFor="promoOneUrl">Promo 1 URL</label>
@@ -684,45 +1022,6 @@ export function AdminConsole({
               }
             />
           </div>
-          {(
-            [
-              ["finalLinkOneLabel", "Final link 1 label"],
-              ["finalLinkOneDescription", "Final link 1 description"],
-              ["finalLinkTwoLabel", "Final link 2 label"],
-              ["finalLinkTwoDescription", "Final link 2 description"],
-              ["finalLinkThreeLabel", "Final link 3 label"],
-              ["finalLinkThreeDescription", "Final link 3 description"],
-            ] as const
-          ).map(([key, label]) => (
-            <div className="field" key={key}>
-              <label htmlFor={key}>{label}</label>
-              <input
-                className="input"
-                id={key}
-                value={config[key]}
-                maxLength={key.includes("Label") ? 120 : 500}
-                onChange={(event) =>
-                  setConfig({ ...config, [key]: event.target.value })
-                }
-              />
-            </div>
-          ))}
-          <label className="field full">
-            <span>Final links</span>
-            <span className="inline-form">
-              <input
-                checked={config.finalSubmissionEnabled}
-                onChange={(event) =>
-                  setConfig({
-                    ...config,
-                    finalSubmissionEnabled: event.target.checked,
-                  })
-                }
-                type="checkbox"
-              />
-              Open the three-link final submission page
-            </span>
-          </label>
           <div className="full form-actions">
             <button
               className="btn"
@@ -734,17 +1033,45 @@ export function AdminConsole({
           </div>
         </form>
       </details>
-      )}
 
-      {isMainAdmin && (
       <details className="details" open>
-        <summary>Round schedule and story-reveal videos</summary>
+        <summary>Round management</summary>
+        <p className="subtle">
+          Add rounds, change their names, and archive closed rounds. Archived
+          rounds disappear from participant pages; their scores and audit
+          history remain preserved.
+        </p>
+        <form className="form-grid" onSubmit={createRound}>
+          <div className="field">
+            <label htmlFor="new-round-name">New round name</label>
+            <input
+              className="input"
+              id="new-round-name"
+              name="name"
+              maxLength={120}
+              required
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="new-round-description">Description (optional)</label>
+            <textarea
+              className="textarea"
+              id="new-round-description"
+              name="description"
+              maxLength={10000}
+            />
+          </div>
+          <button className="btn" disabled={busy} type="submit">
+            Add round
+          </button>
+        </form>
         <div className="card-list" style={{ marginTop: 14 }}>
           {rounds.map((round) => (
             <RoundControls
               key={round.id}
               round={round}
               timeZone={config.eventTimezone}
+              isMainAdmin={isMainAdmin}
               busy={busy}
               request={request}
               runAction={runAction}
@@ -752,6 +1079,7 @@ export function AdminConsole({
           ))}
         </div>
       </details>
+        </>
       )}
 
       <details className="details">
@@ -761,9 +1089,8 @@ export function AdminConsole({
           create challenges or affect scores until you save a challenge.
         </p>
         <div className="card-list" style={{ marginTop: 14 }}>
-          {[2, 3].map((roundNumber) => {
-            const round = rounds.find((item) => item.number === roundNumber);
-            if (!round) return null;
+          {rounds.filter((item) => item.number > 1).map((round) => {
+            const roundNumber = round.number;
 
             const placeholderCount = Math.max(
               0,
@@ -812,7 +1139,7 @@ export function AdminConsole({
               required
               value={selectedChallengeRoundId}
             >
-              {rounds.map((round) => (
+              {rounds.filter((round) => round.number > 1).map((round) => (
                 <option key={round.id} value={round.id}>
                   {round.name}
                 </option>
@@ -915,13 +1242,16 @@ export function AdminConsole({
               maxLength={10000}
             />
           </div>
-          <label className="field full">
-            <span>Final mission</span>
-            <span className="inline-form">
-              <input name="isFinalMission" type="checkbox" />
-              Mark as the one Round 3 device-unlocking challenge
-            </span>
-          </label>
+          {rounds.find((round) => round.id === selectedChallengeRoundId)
+            ?.number === 3 && (
+            <label className="field full">
+              <span>Final mission</span>
+              <span className="inline-form">
+                <input name="isFinalMission" type="checkbox" />
+                Mark as the one Round 3 final challenge
+              </span>
+            </label>
+          )}
           <label className="field full">
             <span>Publication</span>
             <span className="inline-form">
@@ -970,6 +1300,7 @@ export function AdminConsole({
                 roundName={round.name}
                 roundNumber={round.number}
                 roundStatus={round.status}
+                isMainAdmin={isMainAdmin}
                 timeZone={config.eventTimezone}
                 busy={busy}
                 request={request}
@@ -981,66 +1312,66 @@ export function AdminConsole({
       </details>
 
       {isMainAdmin && (
-      <details className="details">
-        <summary>Round 1 manual team score entry</summary>
-        <p className="subtle">
-          Round 1 scores are entered by administrators only. The team total is
-          retained for leaderboard scoring, and an equal share for each active
-          team member is recorded in the audit log.
-        </p>
-        <form className="form-grid" onSubmit={setRoundOneScore}>
-          <div className="field">
-            <label htmlFor="round-one-score-team">Team</label>
-            <select
-              className="select"
-              id="round-one-score-team"
-              name="teamId"
-              required
-            >
-              {admin.teams.map((team) => (
-                <option key={team.id} value={team.id}>
-                  {team.name} (Round 1: {team.roundOneScore}; total: {team.score})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="round-one-score">Round 1 team score</label>
-            <input
-              className="input"
-              id="round-one-score"
-              name="score"
-              type="number"
-              min={0}
-              max={100000}
-              required
-            />
-          </div>
-          <div className="field full">
-            <label htmlFor="round-one-score-reason">Reason (required)</label>
-            <input
-              className="input"
-              id="round-one-score-reason"
-              name="reason"
-              minLength={3}
-              maxLength={500}
-              required
-            />
-          </div>
-          <div className="full form-actions">
-            <button className="btn" disabled={busy} type="submit">
-              Save Round 1 score
-            </button>
-          </div>
-        </form>
-      </details>
+        <details className="details">
+          <summary>Round 1 manual team score entry</summary>
+          <p className="subtle">
+            Administrators can enter Round 1 scores. The team total is retained
+            for leaderboard scoring, and an equal share for each active team
+            member is recorded in the audit log.
+          </p>
+          <form className="form-grid" onSubmit={setRoundOneScore}>
+            <div className="field">
+              <label htmlFor="round-one-score-team">Team</label>
+              <select
+                className="select"
+                id="round-one-score-team"
+                name="teamId"
+                required
+              >
+                {admin.teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name} (Round 1: {team.roundOneScore}; total: {team.score})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="round-one-score">Round 1 team score</label>
+              <input
+                className="input"
+                id="round-one-score"
+                name="score"
+                type="number"
+                min={0}
+                max={100000}
+                required
+              />
+            </div>
+            <div className="field full">
+              <label htmlFor="round-one-score-reason">
+                Reason (optional for main administrators)
+              </label>
+              <input
+                className="input"
+                id="round-one-score-reason"
+                name="reason"
+                maxLength={500}
+              />
+            </div>
+            <div className="full form-actions">
+              <button className="btn" disabled={busy} type="submit">
+                Save Round 1 score
+              </button>
+            </div>
+          </form>
+        </details>
       )}
 
       <details className="details">
         <summary>Administrator team score adjustment</summary>
         <p className="subtle">
-          A reason is required, the operation is audited, and team totals never
-          fall below zero.
+          Score changes are audited and team totals never fall below zero.
+          Reasons are required for admins; main administrators may leave this blank.
         </p>
         <form className="form-grid" onSubmit={adjustScore}>
           <div className="field">
@@ -1066,14 +1397,16 @@ export function AdminConsole({
             />
           </div>
           <div className="field full">
-            <label htmlFor="score-reason">Reason (required)</label>
+            <label htmlFor="score-reason">
+              Reason {isMainAdmin ? "(optional for main administrators)" : "(required)"}
+            </label>
             <input
               className="input"
               id="score-reason"
               name="reason"
-              minLength={3}
+              minLength={isMainAdmin ? undefined : 3}
               maxLength={500}
-              required
+              required={!isMainAdmin}
             />
           </div>
           <div className="full form-actions">
@@ -1085,14 +1418,71 @@ export function AdminConsole({
       </details>
 
       {isMainAdmin && (
+        <>
       <details className="details">
         <summary>Team roster and participant removal</summary>
         <div className="card-list" style={{ marginTop: 14 }}>
           {admin.teams.map((team) => (
             <div className="list-card" key={team.id}>
-              <h3>
-                {team.name} · {team.score} points
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <h3 style={{ margin: 0 }}>
+                  {team.name} · {team.score} points
+                {team.disqualifiedAt ? " · DISQUALIFIED" : ""}
               </h3>
+                <button
+                  className="btn-secondary"
+                  onClick={() => {
+                    void loadTeamActivity(team.id);
+                    const logEl = document.getElementById("participant-activity-log-details");
+                    if (logEl) {
+                      (logEl as HTMLDetailsElement).open = true;
+                      logEl.scrollIntoView({ behavior: "smooth" });
+                    }
+                  }}
+                  style={{ fontSize: 12, padding: "4px 10px" }}
+                  type="button"
+                >
+                  View {team.name} logs
+                </button>
+              </div>
+              {team.disqualifiedAt && (
+                <p className="message error">
+                  Disqualified: {team.disqualificationReason}
+                </p>
+              )}
+              <form
+                className="inline-form"
+                onSubmit={(event) =>
+                  void setTeamDisqualification(
+                    event,
+                    team.id,
+                    !team.disqualifiedAt,
+                  )
+                }
+              >
+                <div className="field">
+                  <label htmlFor={`team-status-reason-${team.id}`}>
+                    {team.disqualifiedAt
+                      ? "Reinstatement reason"
+                      : "Disqualification reason"}
+                  </label>
+                  <input
+                    className="input"
+                    id={`team-status-reason-${team.id}`}
+                    name="reason"
+                    minLength={3}
+                    maxLength={500}
+                    required
+                  />
+                </div>
+                <button
+                  className={team.disqualifiedAt ? "btn-secondary" : "btn-danger"}
+                  disabled={busy}
+                  type="submit"
+                >
+                  {team.disqualifiedAt ? "Reinstate team" : "Disqualify team"}
+                </button>
+              </form>
               {team.members.map((member) => (
                 <div className="link-card" key={member.id}>
                   <div>
@@ -1177,9 +1567,7 @@ export function AdminConsole({
           ))}
         </div>
       </details>
-      )}
 
-      {isMainAdmin && (
       <details className="details">
         <summary>Documented rules review</summary>
         <p className="subtle">
@@ -1249,34 +1637,7 @@ export function AdminConsole({
           </div>
         )}
       </details>
-      )}
-
-      {isMainAdmin && (
-      <details className="details">
-        <summary>Final team submissions ({admin.finalSubmissions.length})</summary>
-        <div className="card-list" style={{ marginTop: 14 }}>
-          {admin.finalSubmissions.map((submission) => (
-            <div className="list-card" key={submission.id}>
-              <strong>{submission.team.name}</strong>
-              <div className="stack">
-                {[submission.firstUrl, submission.secondUrl, submission.thirdUrl].map(
-                  (url) => (
-                    <a href={url} key={url} target="_blank" rel="noreferrer">
-                      {url}
-                    </a>
-                  ),
-                )}
-              </div>
-              <span className="subtle">
-                {formatEventTime(submission.submittedAt, config.eventTimezone)}
-              </span>
-            </div>
-          ))}
-          {admin.finalSubmissions.length === 0 && (
-            <p className="subtle">No final submissions yet.</p>
-          )}
-        </div>
-      </details>
+        </>
       )}
 
       {/* Separate Admin and Participant Log Spaces */}
@@ -1322,7 +1683,7 @@ export function AdminConsole({
         />
       </details>
 
-      <details className="details">
+      <details className="details" id="participant-activity-log-details">
         <summary>
           👥 Participant &amp; Team Activity Log
           {selectedTeamName ? ` · ${selectedTeamName}` : ""} (
@@ -1349,6 +1710,19 @@ export function AdminConsole({
             ))}
           </select>
         </div>
+        {selectedParticipantLogTeamId && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+            <span className="badge green">Showing logs: {selectedTeamName ?? "Team"}</span>
+            <button
+              className="btn-secondary"
+              onClick={() => void loadTeamActivity("")}
+              style={{ padding: "4px 10px", fontSize: 12 }}
+              type="button"
+            >
+              ✕ Clear filter (View all teams)
+            </button>
+          </div>
+        )}
         {teamActivityError && (
           <p className="message error" role="alert">
             {teamActivityError}
@@ -1363,7 +1737,14 @@ export function AdminConsole({
                 : "No participant activity recorded yet."
           }
           entries={participantLogEntries}
-          onTeamClick={(teamId) => void loadTeamActivity(teamId)}
+          onTeamClick={(teamId) => {
+            void loadTeamActivity(teamId);
+            const logEl = document.getElementById("participant-activity-log-details");
+            if (logEl) {
+              (logEl as HTMLDetailsElement).open = true;
+              logEl.scrollIntoView({ behavior: "smooth" });
+            }
+          }}
           timeZone={config.eventTimezone}
         />
         {selectedParticipantLogTeamId && teamActivityCursor && (
@@ -1490,12 +1871,14 @@ function ActivityTable({
 function RoundControls({
   round,
   timeZone,
+  isMainAdmin,
   busy,
   request,
   runAction,
 }: {
   round: RoundInput;
   timeZone: string;
+  isMainAdmin: boolean;
   busy: boolean;
   request: (
     path: string,
@@ -1562,11 +1945,15 @@ function RoundControls({
     event.preventDefault();
     await runAction(() =>
       request(path, "PATCH", {
-        action: "content",
+        action: isMainAdmin ? "content" : "rename",
         name,
-        description,
-        revealVideoUrl,
-        revealAvailableAt: eventTimeIso(revealAvailableAt, timeZone),
+        ...(isMainAdmin
+          ? {
+              description,
+              revealVideoUrl,
+              revealAvailableAt: eventTimeIso(revealAvailableAt, timeZone),
+            }
+          : {}),
       }),
     );
   }
@@ -1580,6 +1967,17 @@ function RoundControls({
         closesAt: closesAt ? eventTimeIso(closesAt, timeZone) : "",
       }),
     );
+  }
+
+  async function archiveRound() {
+    if (
+      !window.confirm(
+        `Archive ${round.name}? It will be hidden from participants, but its challenge history, scores, and audit records will be preserved.`,
+      )
+    ) {
+      return;
+    }
+    await runAction(() => request(path, "DELETE"));
   }
 
   return (
@@ -1596,28 +1994,45 @@ function RoundControls({
           <span className="subtle">{round.challenges.length} challenges</span>
         </div>
         <div className="button-row">
-          <button
-            className="btn"
-            disabled={busy || round.status === "OPEN"}
-            onClick={() =>
-              void runAction(() => request(path, "PATCH", { action: "start" }))
-            }
-            type="button"
-          >
-            {round.status === "CLOSED" ? "Reopen round" : "Start now"}
-          </button>
-          <button
-            className="btn-secondary"
-            disabled={busy || round.status === "CLOSED"}
-            onClick={() =>
-              void runAction(() => request(path, "PATCH", { action: "close" }))
-            }
-            type="button"
-          >
-            End round
-          </button>
+          {isMainAdmin && (
+            <>
+              <button
+                className="btn"
+                disabled={busy || round.status === "OPEN"}
+                onClick={() =>
+                  void runAction(() => request(path, "PATCH", { action: "start" }))
+                }
+                type="button"
+              >
+                {round.status === "CLOSED" ? "Reopen round" : "Start now"}
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={busy || round.status === "CLOSED"}
+                onClick={() =>
+                  void runAction(() => request(path, "PATCH", { action: "close" }))
+                }
+                type="button"
+              >
+                End round
+              </button>
+            </>
+          )}
+          {round.number !== 1 && (
+            <button
+              className="btn-danger"
+              disabled={
+                busy || round.status === "OPEN" || round.status === "SCHEDULED"
+              }
+              onClick={() => void archiveRound()}
+              type="button"
+            >
+              Archive round
+            </button>
+          )}
         </div>
       </div>
+      {isMainAdmin && (
       <form className="form-grid" onSubmit={schedule}>
         <div className="field">
           <label htmlFor={`opens-${round.id}`}>Scheduled start ({timeZone})</label>
@@ -1652,8 +2067,13 @@ function RoundControls({
           </button>
         </div>
       </form>
-      <details className="details">
-        <summary>Round description and reveal video</summary>
+      )}
+      <details className="details" open={!isMainAdmin}>
+        <summary>
+          {isMainAdmin
+            ? "Round name, description, and reveal video"
+            : "Change round name"}
+        </summary>
         <form className="field-group" onSubmit={updateContent}>
           <div className="field">
             <label htmlFor={`name-${round.id}`}>Stage name</label>
@@ -1665,6 +2085,8 @@ function RoundControls({
               maxLength={120}
             />
           </div>
+          {isMainAdmin && (
+            <>
           <div className="field">
             <label htmlFor={`desc-${round.id}`}>Stage description</label>
             <textarea
@@ -1698,8 +2120,10 @@ function RoundControls({
               }}
             />
           </div>
+            </>
+          )}
           <button className="btn-secondary" disabled={busy} type="submit">
-            Save round content
+            {isMainAdmin ? "Save round content" : "Save round name"}
           </button>
         </form>
       </details>
@@ -1712,6 +2136,7 @@ function ChallengeEditor({
   roundName,
   roundNumber,
   roundStatus,
+  isMainAdmin,
   timeZone,
   busy,
   request,
@@ -1721,6 +2146,7 @@ function ChallengeEditor({
   roundName: string;
   roundNumber: number;
   roundStatus: string;
+  isMainAdmin: boolean;
   timeZone: string;
   busy: boolean;
   request: (
@@ -1731,6 +2157,10 @@ function ChallengeEditor({
   runAction: (action: () => Promise<unknown>) => Promise<void>;
 }) {
   const [file, setFile] = useState<File | null>(null);
+  const [results, setResults] = useState<ChallengeResults | null>(null);
+  const [resultsError, setResultsError] = useState("");
+  const [resultsLoading, setResultsLoading] = useState(false);
+  const [showResults, setShowResults] = useState(false);
   const [opensAt, setOpensAt] = useState(
     eventTimeInput(challenge.opensAt, timeZone),
   );
@@ -1810,6 +2240,50 @@ function ChallengeEditor({
     );
   }
 
+  async function toggleResults() {
+    if (showResults) {
+      setShowResults(false);
+      return;
+    }
+    if (results) {
+      setShowResults(true);
+      return;
+    }
+
+    setResultsLoading(true);
+    setResultsError("");
+    try {
+      const response = await fetch(
+        `/api/admin/challenges/${challenge.id}/results`,
+        { cache: "no-store" },
+      );
+      const body = (await response.json()) as ChallengeResults & {
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(body.error ?? "Challenge results could not be loaded.");
+      }
+      setResults(body);
+      setShowResults(true);
+    } catch (reason) {
+      setResultsError(
+        reason instanceof Error
+          ? reason.message
+          : "Challenge results could not be loaded.",
+      );
+    } finally {
+      setResultsLoading(false);
+    }
+  }
+
+  async function togglePublish() {
+    await runAction(() =>
+      request(`/api/admin/challenges/${challenge.id}`, "PATCH", {
+        enabled: !challenge.enabled,
+      }),
+    );
+  }
+
   async function deleteChallenge() {
     if (
       !window.confirm(
@@ -1829,22 +2303,48 @@ function ChallengeEditor({
         {challenge.title} · {roundName} · {challenge.pointValue} points
         {challenge.enabled ? " · published" : " · unpublished"}
       </summary>
-      {[2, 3].includes(roundNumber) && (
+      {roundNumber >= 2 && (
         <p className="subtle" style={{ marginTop: 12 }}>
           Restarting immediately publishes this challenge and clears its
-          challenge-level open and close times. The parent round must still
-          be open; round scheduling and round closures remain in effect.
+          challenge-level open and close times. The main administrator can
+          also reopen a closed round when no later round is active.
         </p>
       )}
       <div className="button-row" style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {[2, 3].includes(roundNumber) && (
+        <button
+          className="btn-secondary"
+          disabled={busy}
+          onClick={() => void togglePublish()}
+          type="button"
+        >
+          {challenge.enabled ? "🙈 Hide challenge" : "👁 Show (Publish) challenge"}
+        </button>
+        <button
+          className="btn-secondary"
+          disabled={resultsLoading}
+          onClick={() => void toggleResults()}
+          type="button"
+        >
+          {resultsLoading
+            ? "Loading results…"
+            : showResults
+              ? "Hide solve and attempt details"
+              : "View solve and attempt details"}
+        </button>
+        {roundNumber >= 2 && (
           <button
             className="btn-secondary"
-            disabled={busy || !["OPEN", "SCHEDULED"].includes(roundStatus)}
+            disabled={
+              busy ||
+              (!["OPEN", "SCHEDULED"].includes(roundStatus) &&
+                !(isMainAdmin && roundStatus === "CLOSED"))
+            }
             onClick={() => void restartChallenge()}
             type="button"
           >
-            Restart challenge now (admin override)
+            {roundStatus === "CLOSED"
+              ? "Reopen round and restart challenge"
+              : "Restart challenge now (admin override)"}
           </button>
         )}
         <button
@@ -1856,6 +2356,113 @@ function ChallengeEditor({
           Delete challenge
         </button>
       </div>
+      {resultsError && (
+        <p className="message error" role="status">{resultsError}</p>
+      )}
+      {showResults && results && (
+        <section className="panel" style={{ marginTop: 12 }}>
+          <div className="eyebrow">Administrator-only challenge history</div>
+          <h3>
+            {results.totalSolved} teams solved ·{" "}
+            {results.totalIncorrectAttempts} incorrect attempts
+          </h3>
+          {results.solves.length > 0 ? (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Team</th>
+                    <th>First solver</th>
+                    <th>Points</th>
+                    <th>Time to solve</th>
+                    <th>Incorrect attempts</th>
+                    <th>Solved at (IST)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.solves.map((solve) => (
+                    <tr key={`${solve.teamName}-${solve.solvedAt}`}>
+                      <td>{solve.teamName}</td>
+                      <td>
+                        {solve.solverName}
+                        <span className="subtle">{solve.solverEmail}</span>
+                      </td>
+                      <td>{solve.pointsAwarded}</td>
+                      <td>
+                        {solve.elapsedSeconds === null
+                          ? "Timer unavailable"
+                          : `${Math.floor(solve.elapsedSeconds / 60)}m ${
+                              solve.elapsedSeconds % 60
+                            }s`}
+                      </td>
+                      <td>{solve.incorrectAttempts}</td>
+                      <td>{formatEventTime(solve.solvedAt, timeZone)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="subtle">No team has solved this challenge yet.</p>
+          )}
+          <h4 style={{ marginBottom: 8 }}>Participant writeups</h4>
+          {results.writeups.length > 0 ? (
+            <div className="card-list">
+              {results.writeups.map((writeup) => (
+                <article
+                  className="link-card"
+                  key={`${writeup.participantEmail}-${writeup.updatedAt}`}
+                >
+                  <div>
+                    <strong>
+                      {writeup.teamName} · {writeup.participantName}
+                    </strong>
+                    <span className="subtle">
+                      {writeup.participantEmail} · Updated{" "}
+                      {formatEventTime(writeup.updatedAt, timeZone)} IST
+                    </span>
+                  </div>
+                  <pre className="evidence-text">{writeup.content}</pre>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="subtle">No participant writeups submitted.</p>
+          )}
+          <h4 style={{ marginBottom: 8 }}>Incorrect flag submissions</h4>
+          {results.incorrectAttempts.length > 0 ? (
+            <div className="table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Team</th>
+                    <th>Participant</th>
+                    <th>Submitted at (IST)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.incorrectAttempts.map((attempt, index) => (
+                    <tr key={`${attempt.teamName}-${attempt.attemptedAt}-${index}`}>
+                      <td>{attempt.teamName}</td>
+                      <td>
+                        {attempt.participantName}
+                        <span className="subtle">{attempt.participantEmail}</span>
+                      </td>
+                      <td>{formatEventTime(attempt.attemptedAt, timeZone)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="subtle">No incorrect submissions recorded.</p>
+          )}
+          <p className="subtle">
+            Submitted flag text is not stored, so this history displays attempt
+            identity and time without exposing guesses.
+          </p>
+        </section>
+      )}
       <form className="form-grid" onSubmit={save} style={{ marginTop: 12 }}>
         <div className="field">
           <label htmlFor={`edit-title-${challenge.id}`}>Challenge title</label>
@@ -1965,17 +2572,19 @@ function ChallengeEditor({
             Publish to teams when the round is open
           </span>
         </label>
-        <label className="field">
-          <span>Mission completion</span>
-          <span className="inline-form">
-            <input
-              defaultChecked={challenge.isFinalMission}
-              name="isFinalMission"
-              type="checkbox"
-            />
-            This is the final mission
-          </span>
-        </label>
+        {roundNumber === 3 && (
+          <label className="field">
+            <span>Mission completion</span>
+            <span className="inline-form">
+              <input
+                defaultChecked={challenge.isFinalMission}
+                name="isFinalMission"
+                type="checkbox"
+              />
+              This is the final mission
+            </span>
+          </label>
+        )}
         <div className="full form-actions" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
           <button className="btn-secondary" disabled={busy} type="submit">
             Save challenge settings

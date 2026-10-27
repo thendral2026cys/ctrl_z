@@ -66,7 +66,7 @@ export async function POST(
           transaction.challengeSolve.aggregate({
             where: {
               teamId: membership.teamId,
-              challenge: { round: { number: { in: [2, 3] } } },
+              challenge: { round: { number: { gte: 2 } } },
             },
             _sum: { pointsAwarded: true },
           }),

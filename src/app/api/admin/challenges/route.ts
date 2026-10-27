@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
-import { assertSameOrigin, digestFlag } from "@/lib/security";
+import { assertSameOrigin, digestFlag, encryptFlag } from "@/lib/security";
 import { requireAdmin } from "@/lib/server";
 
 const challengeSchema = z.object({
@@ -27,11 +27,20 @@ export async function POST(request: Request) {
     const input = challengeSchema.parse(await readJson(request));
     const round = await prisma.round.findUnique({
       where: { id: input.roundId },
-      select: { number: true },
+      select: { number: true, archivedAt: true },
     });
 
     if (!round) {
       throw new ApiError("Round not found.", 404);
+    }
+    if (round.archivedAt) {
+      throw new ApiError("Challenges cannot be added to an archived round.", 409);
+    }
+    if (round.number === 1) {
+      throw new ApiError(
+        "Round 1 uses the external contest and does not support challenge creation here.",
+        409,
+      );
     }
 
     if (input.isFinalMission && round.number !== 3) {
@@ -62,6 +71,7 @@ export async function POST(request: Request) {
           description: input.description,
           evidenceText: input.evidenceText,
           flagDigest: digestFlag(input.flag),
+          flagEncrypted: encryptFlag(input.flag),
           pointValue: input.pointValue,
           hints: input.hints,
           isFinalMission: input.isFinalMission,

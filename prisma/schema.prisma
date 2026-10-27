@@ -25,23 +25,34 @@ enum ReviewStatus {
   CLOSED
 }
 
+enum TeamJoinRequestStatus {
+  PENDING
+  ACCEPTED
+  DENIED
+}
+
 model User {
-  id               String            @id
-  name             String
-  email            String            @unique
-  emailVerified    Boolean           @default(false)
-  image            String?
-  role             String            @default("PARTICIPANT")
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  sessions         Session[]
-  accounts         Account[]
-  membership       Membership?
-  solvedChallenges ChallengeSolve[]
-  flagAttempts     FlagAttempt[]
-  scoreAdjustments ScoreAdjustment[] @relation("AdjustmentActor")
-  activity         ActivityLog[]     @relation("ActivityActor")
-  reviews          RuleReview[]      @relation("ReviewActor")
+  id                   String             @id
+  name                 String
+  email                String             @unique
+  emailVerified        Boolean            @default(false)
+  image                String?
+  role                 String             @default("PARTICIPANT")
+  disabledAt           DateTime?
+  disabledReason       String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  sessions             Session[]
+  accounts             Account[]
+  membership           Membership?
+  teamJoinRequests     TeamJoinRequest[]  @relation("JoinRequestUser")
+  reviewedJoinRequests TeamJoinRequest[]  @relation("JoinRequestReviewer")
+  solvedChallenges     ChallengeSolve[]
+  flagAttempts         FlagAttempt[]
+  challengeWriteups    ChallengeWriteup[]
+  scoreAdjustments     ScoreAdjustment[]  @relation("AdjustmentActor")
+  activity             ActivityLog[]      @relation("ActivityActor")
+  reviews              RuleReview[]       @relation("ReviewActor")
 }
 
 model Session {
@@ -54,8 +65,6 @@ model Session {
   userAgent String?
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
 }
 
 model Account {
@@ -89,19 +98,24 @@ model Verification {
 }
 
 model Team {
-  id               String               @id @default(cuid())
-  name             String               @unique
-  inviteCodeHash   String               @unique
-  roundOneScore    Int                  @default(0)
-  createdAt        DateTime             @default(now())
-  memberships      Membership[]
-  challengeSolves  ChallengeSolve[]
-  flagAttempts     FlagAttempt[]
-  timers           TeamChallengeTimer[]
-  scoreAdjustments ScoreAdjustment[]
-  finalSubmission  FinalSubmission?
-  activity         ActivityLog[]
-  reviews          RuleReview[]
+  id                     String               @id @default(cuid())
+  name                   String               @unique
+  inviteCodeHash         String               @unique
+  roundOneScore          Int                  @default(0)
+  leaderboardHidden      Boolean              @default(false)
+  disqualifiedAt         DateTime?
+  disqualificationReason String?
+  createdAt              DateTime             @default(now())
+  memberships            Membership[]
+  joinRequests           TeamJoinRequest[]
+  challengeSolves        ChallengeSolve[]
+  challengeWriteups      ChallengeWriteup[]
+  flagAttempts           FlagAttempt[]
+  timers                 TeamChallengeTimer[]
+  scoreAdjustments       ScoreAdjustment[]
+  finalSubmission        FinalSubmission?
+  activity               ActivityLog[]
+  reviews                RuleReview[]
 }
 
 model Membership {
@@ -120,6 +134,22 @@ model Membership {
   @@index([teamId, removedAt])
 }
 
+model TeamJoinRequest {
+  id          String                @id @default(cuid())
+  userId      String
+  teamId      String
+  status      TeamJoinRequestStatus @default(PENDING)
+  createdAt   DateTime              @default(now())
+  decidedAt   DateTime?
+  decidedById String?
+  user        User                  @relation("JoinRequestUser", fields: [userId], references: [id], onDelete: Restrict)
+  team        Team                  @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  decidedBy   User?                 @relation("JoinRequestReviewer", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([teamId, status, createdAt])
+  @@index([userId, createdAt])
+}
+
 model Round {
   id                String        @id @default(cuid())
   number            Int           @unique
@@ -132,6 +162,7 @@ model Round {
   revealVideoUrl    String?
   revealAvailableAt DateTime?
   challenges        Challenge[]
+  archivedAt        DateTime?
   activity          ActivityLog[]
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -145,6 +176,7 @@ model Challenge {
   description     String               @default("")
   evidenceText    String               @default("")
   flagDigest      String
+  flagEncrypted   String?
   pointValue      Int
   hints           String[]             @default([])
   isFinalMission  Boolean              @default(false)
@@ -155,6 +187,7 @@ model Challenge {
   round           Round                @relation(fields: [roundId], references: [id], onDelete: Restrict)
   evidenceFiles   EvidenceFile[]
   solves          ChallengeSolve[]
+  writeups        ChallengeWriteup[]
   attempts        FlagAttempt[]
   timers          TeamChallengeTimer[]
   activity        ActivityLog[]
@@ -191,6 +224,22 @@ model ChallengeSolve {
 
   @@unique([teamId, challengeId])
   @@index([teamId, solvedAt])
+}
+
+model ChallengeWriteup {
+  id          String    @id @default(cuid())
+  teamId      String
+  challengeId String
+  userId      String
+  content     String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  team        Team      @relation(fields: [teamId], references: [id], onDelete: Restrict)
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Restrict)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([challengeId, userId])
+  @@index([teamId, challengeId])
 }
 
 model FlagAttempt {

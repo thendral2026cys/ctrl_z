@@ -1,0 +1,2 @@
+ALTER TABLE "Team"
+ADD COLUMN "leaderboardHidden" BOOLEAN NOT NULL DEFAULT false;

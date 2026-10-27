@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   digestFlag,
   digestInviteCode,
+  decryptFlag,
+  encryptFlag,
   isSafeHttpsUrl,
   matchesSecret,
   verifyFlag,
@@ -23,12 +25,26 @@ import {
 
 test("flag answers are stored as keyed digests and compared exactly", () => {
   process.env.FLAG_SECRET = "a-test-only-secret-that-is-at-least-32-characters";
+  process.env.BETTER_AUTH_SECRET = "another-test-secret-that-is-at-least-32-characters";
   const digest = digestFlag("VW{device-restored}");
 
   assert.notEqual(digest, "VW{device-restored}");
   assert.equal(verifyFlag("VW{device-restored}", digest), true);
   assert.equal(verifyFlag("VW{different-answer}", digest), false);
   assert.equal(verifyFlag(" vw{device-restored} ", digest), false);
+});
+
+test("main-admin challenge answers encrypt and decrypt with authenticated encryption", () => {
+  process.env.BETTER_AUTH_SECRET =
+    "another-test-secret-that-is-at-least-32-characters";
+  const encrypted = encryptFlag("VW{private-answer}");
+
+  assert.notEqual(encrypted, "VW{private-answer}");
+  assert.equal(decryptFlag(encrypted), "VW{private-answer}");
+  assert.notEqual(encryptFlag("VW{private-answer}"), encrypted);
+  const tampered = encrypted.split(":");
+  tampered[3] = `${tampered[3].startsWith("A") ? "B" : "A"}${tampered[3].slice(1)}`;
+  assert.throws(() => decryptFlag(tampered.join(":")));
 });
 
 test("invite codes are hashed before storage", () => {
@@ -148,18 +164,19 @@ test("Round 1 score allocations are equal and preserve fractional shares exactly
   assert.throws(() => allocateRoundOneScore(10, []), /active team member/);
 });
 
-test("automatic challenge scoring is limited to Rounds 2 and 3", () => {
+test("automatic challenge scoring starts in Round 2, including added rounds", () => {
   assert.equal(isAutomaticScoringRound(1), false);
   assert.equal(isAutomaticScoringRound(2), true);
   assert.equal(isAutomaticScoringRound(3), true);
-  assert.equal(isAutomaticScoringRound(4), false);
+  assert.equal(isAutomaticScoringRound(4), true);
 });
 
-test("challenge restart overrides require an open or scheduled Round 2 or 3", () => {
+test("challenge restart overrides can reopen closed automatic-scoring rounds", () => {
   assert.equal(canAdminRestartChallenge(2, "OPEN"), true);
   assert.equal(canAdminRestartChallenge(3, "SCHEDULED"), true);
+  assert.equal(canAdminRestartChallenge(4, "OPEN"), true);
+  assert.equal(canAdminRestartChallenge(2, "CLOSED"), true);
   assert.equal(canAdminRestartChallenge(1, "OPEN"), false);
-  assert.equal(canAdminRestartChallenge(2, "CLOSED"), false);
   assert.equal(canAdminRestartChallenge(3, "LOCKED"), false);
 });
 
@@ -186,5 +203,24 @@ test("leaderboard ranks ties consistently and skips rank numbers after ties", ()
       { id: "zero-a", name: "A", score: 0 },
     ]).map((team) => team.rank),
     [1, 1],
+  );
+});
+
+test("leaderboard breaks equal-point ties by earliest successful solve", () => {
+  const ranked = rankTeams([
+    { id: "later", name: "Later", score: 100, firstSolvedAt: 200 },
+    { id: "earlier", name: "Earlier", score: 100, firstSolvedAt: 100 },
+    { id: "higher", name: "Higher", score: 110, firstSolvedAt: 300 },
+    { id: "no-solve", name: "No solve", score: 100, firstSolvedAt: null },
+  ]);
+
+  assert.deepEqual(
+    ranked.map(({ id, rank }) => ({ id, rank })),
+    [
+      { id: "higher", rank: 1 },
+      { id: "earlier", rank: 2 },
+      { id: "later", rank: 3 },
+      { id: "no-solve", rank: 4 },
+    ],
   );
 });

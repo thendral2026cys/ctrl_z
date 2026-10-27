@@ -4,12 +4,17 @@ import { ApiError, handleApiError, readJson } from "@/lib/api";
 import {
   getAvailableChallenge,
   getAvailableChallengeInTransaction,
+  getMainAdminPracticeChallengeInTransaction,
 } from "@/lib/competition";
 import { prisma } from "@/lib/db";
 import { isAutomaticScoringRound } from "@/lib/scoring";
 import { assertSameOrigin, verifyFlag } from "@/lib/security";
 import { enforceFlagAttemptLimit } from "@/lib/rate-limit";
-import { requireActiveMembership, requireUser } from "@/lib/server";
+import {
+  isMainAdminEmail,
+  requireActiveMembership,
+  requireUser,
+} from "@/lib/server";
 
 const submissionSchema = z.object({
   flag: z.string().trim().min(1).max(500),
@@ -22,14 +27,63 @@ export async function POST(
   try {
     assertSameOrigin(request);
     const session = await requireUser(request.headers);
-    const membership = await requireActiveMembership(session.user.id);
     const { id } = await context.params;
     const input = submissionSchema.parse(await readJson(request));
-    const challenge = await getAvailableChallenge(id);
+    const isMainAdmin =
+      session.user.role === "MAIN_ADMIN" &&
+      session.user.emailVerified === true &&
+      isMainAdminEmail(session.user.email);
+    const challenge = isMainAdmin
+      ? await prisma.$transaction((transaction) =>
+          getMainAdminPracticeChallengeInTransaction(transaction, id),
+        )
+      : await getAvailableChallenge(id);
     if (!isAutomaticScoringRound(challenge.round.number)) {
-      throw new ApiError("Challenge scoring is available in Rounds 2 and 3 only.", 403);
+      throw new ApiError("Challenge scoring is available from Round 2 onward.", 403);
     }
 
+    if (isMainAdmin) {
+      const result = await prisma.$transaction(async (transaction) => {
+        const currentChallenge = await getMainAdminPracticeChallengeInTransaction(
+          transaction,
+          challenge.id,
+        );
+        if (!isAutomaticScoringRound(currentChallenge.round.number)) {
+          throw new ApiError(
+            "Challenge scoring is available from Round 2 onward.",
+            403,
+          );
+        }
+        const correct = verifyFlag(input.flag, currentChallenge.flagDigest);
+        await transaction.activityLog.create({
+          data: {
+            actorId: session.user.id,
+            actorRole: "MAIN_ADMIN",
+            roundId: currentChallenge.roundId,
+            challengeId: currentChallenge.id,
+            action: "MAIN_ADMIN_PRACTICE_SUBMISSION",
+            details: { correct, pointsAwarded: 0 },
+          },
+        });
+        return { correct, solvedAt: new Date() };
+      }, { isolationLevel: "Serializable" });
+
+      if (!result.correct) {
+        return Response.json(
+          { correct: false, error: "That flag is not correct." },
+          { status: 400 },
+        );
+      }
+      return Response.json({
+        correct: true,
+        alreadySolved: false,
+        adminPracticeSolve: true,
+        pointsAwarded: 0,
+        solvedAt: result.solvedAt,
+      });
+    }
+
+    const membership = await requireActiveMembership(session.user.id);
     const timer = await prisma.teamChallengeTimer.findUnique({
       where: {
         teamId_challengeId: {
@@ -56,7 +110,7 @@ export async function POST(
         );
         if (!isAutomaticScoringRound(currentChallenge.round.number)) {
           throw new ApiError(
-            "Challenge scoring is available in Rounds 2 and 3 only.",
+            "Challenge scoring is available from Round 2 onward.",
             403,
           );
         }
@@ -67,9 +121,15 @@ export async function POST(
               challengeId: currentChallenge.id,
             },
           },
+          include: {
+            solvingUser: { select: { name: true } },
+          },
         });
         if (solved) {
-          return { correct: true, alreadySolved: true, pointsAwarded: 0 };
+          throw new ApiError(
+            `This challenge was already completed by ${solved.solvingUser.name} and cannot be solved again.`,
+            409,
+          );
         }
 
         // Enforce rate limit after the already-solved check so we don't burn
@@ -137,6 +197,7 @@ export async function POST(
         return {
           correct: true,
           alreadySolved: false,
+          solvedByName: session.user.name,
           pointsAwarded: currentChallenge.pointValue,
           solvedAt: solve.solvedAt,
           finalMissionComplete: currentChallenge.isFinalMission,
@@ -155,11 +216,14 @@ export async function POST(
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === "P2002"
       ) {
-        return Response.json({
-          correct: true,
-          alreadySolved: true,
-          pointsAwarded: 0,
-        });
+        return Response.json(
+          {
+            correct: true,
+            alreadySolved: true,
+            error: "This challenge was already completed by a teammate and cannot be solved again.",
+          },
+          { status: 409 },
+        );
       }
       throw error;
     }

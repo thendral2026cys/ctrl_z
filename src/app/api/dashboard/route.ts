@@ -15,9 +15,11 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   try {
     const session = await requireUser(request.headers);
-    const [config, rounds, membership] = await Promise.all([
+    const [config, rounds, membership, leaderboard, solveCounts] =
+      await Promise.all([
       prisma.eventConfig.findUnique({ where: { id: "main" } }),
       prisma.round.findMany({
+        where: { archivedAt: null },
         include: {
           challenges: {
             include: {
@@ -35,27 +37,109 @@ export async function GET(request: Request) {
         where: { userId: session.user.id },
         include: { team: true },
       }),
+      getRankedTeamLeaderboard(),
+      prisma.challengeSolve.groupBy({
+        by: ["challengeId"],
+        where: { team: { disqualifiedAt: null } },
+        _count: { _all: true },
+      }),
     ]);
     if (!config) {
       throw new Error("Event setup is incomplete: run the database seed.");
     }
 
-    const leaderboard = await getRankedTeamLeaderboard();
-
-    const activeMembership = membership && !membership.removedAt ? membership : null;
-    const teamScore = activeMembership
-      ? await getTeamScore(activeMembership.teamId)
-      : null;
-    const solvedIds = activeMembership
-      ? new Set(
-          (
-            await prisma.challengeSolve.findMany({
-              where: { teamId: activeMembership.teamId },
-              select: { challengeId: true, solvedAt: true },
+    const activeMembership =
+      membership && !membership.removedAt && !membership.team.disqualifiedAt
+        ? membership
+        : null;
+    const isParticipant =
+      session.user.role !== "ADMIN" && session.user.role !== "MAIN_ADMIN";
+    const [
+      availableTeams,
+      ownJoinRequests,
+      incomingJoinRequests,
+      teamScore,
+      teamSolves,
+      teamTimers,
+    ] =
+      await Promise.all([
+        !membership && isParticipant
+          ? prisma.team.findMany({
+              where: { disqualifiedAt: null },
+              select: {
+                id: true,
+                name: true,
+                _count: {
+                  select: { memberships: { where: { removedAt: null } } },
+                },
+              },
+              orderBy: { name: "asc" },
             })
-          ).map((solve) => solve.challengeId),
-        )
-      : new Set<string>();
+          : Promise.resolve([]),
+        !membership && isParticipant
+          ? prisma.teamJoinRequest.findMany({
+              where: { userId: session.user.id },
+              take: 20,
+              orderBy: { createdAt: "desc" },
+              select: {
+                id: true,
+                status: true,
+                createdAt: true,
+                team: { select: { name: true } },
+              },
+            })
+          : Promise.resolve([]),
+        activeMembership?.role === "LEADER"
+          ? prisma.teamJoinRequest.findMany({
+              where: {
+                teamId: activeMembership.teamId,
+                status: "PENDING",
+              },
+              take: 50,
+              orderBy: { createdAt: "asc" },
+              select: {
+                id: true,
+                createdAt: true,
+                user: { select: { name: true } },
+              },
+            })
+          : Promise.resolve([]),
+        activeMembership
+            ? getTeamScore(activeMembership.teamId)
+            : Promise.resolve(null),
+        activeMembership
+            ? prisma.challengeSolve.findMany({
+                where: { teamId: activeMembership.teamId },
+                select: {
+                  challengeId: true,
+                  solvedAt: true,
+                  solvingUser: { select: { name: true } },
+                },
+              })
+            : Promise.resolve([]),
+        activeMembership
+            ? prisma.teamChallengeTimer.findMany({
+                where: { teamId: activeMembership.teamId },
+                select: { challengeId: true, firstOpenedAt: true },
+              })
+            : Promise.resolve([]),
+      ]);
+    const selectableTeams = availableTeams
+      .filter((team) => team._count.memberships < 4)
+      .map(({ id, name, _count }) => ({
+        id,
+        name,
+        availableSlots: 4 - _count.memberships,
+      }));
+    const solvedIds = new Set(teamSolves.map((solve) => solve.challengeId));
+    const solveTimeMap = new Map(teamSolves.map((s) => [s.challengeId, s.solvedAt]));
+    const solveUserMap = new Map(
+      teamSolves.map((s) => [s.challengeId, s.solvingUser?.name ?? null]),
+    );
+    const timerMap = new Map((teamTimers ?? []).map((t) => [t.challengeId, t.firstOpenedAt]));
+    const challengeSolveCounts = new Map(
+      solveCounts.map((item) => [item.challengeId, item._count._all]),
+    );
 
     const roundData = rounds.map((round, index) => {
       const previous = index > 0 ? rounds[index - 1] : null;
@@ -194,24 +278,19 @@ export async function GET(request: Request) {
                 closesAt:
                   isAdmin ? challenge.closesAt : null,
                 solved: solvedIds.has(challenge.id),
+                solvedByName: solveUserMap.get(challenge.id) ?? null,
+                solveCount: challengeSolveCounts.get(challenge.id) ?? 0,
                 files: challenge.evidenceFiles,
+                solveElapsedSeconds: (() => {
+                  const solvedAt = solveTimeMap.get(challenge.id);
+                  const openedAt = timerMap.get(challenge.id);
+                  if (!solvedAt || !openedAt) return null;
+                  return Math.max(0, Math.floor((solvedAt.getTime() - openedAt.getTime()) / 1000));
+                })(),
               }))
           : [],
       };
     });
-
-    let ownSubmission = null;
-    if (activeMembership) {
-      ownSubmission = await prisma.finalSubmission.findUnique({
-        where: { teamId: activeMembership.teamId },
-        select: {
-          firstUrl: true,
-          secondUrl: true,
-          thirdUrl: true,
-          submittedAt: true,
-        },
-      });
-    }
 
     const climaxAvailable =
       Boolean(
@@ -250,7 +329,7 @@ export async function GET(request: Request) {
                   orderBy: { joinedAt: "asc" },
                 },
                 challengeSolves: {
-                  where: { challenge: { round: { number: { in: [2, 3] } } } },
+                  where: { challenge: { round: { number: { gte: 2 } } } },
                   select: { pointsAwarded: true },
                 },
                 scoreAdjustments: {
@@ -271,12 +350,6 @@ export async function GET(request: Request) {
               },
             }),
             isMainAdmin
-              ? prisma.finalSubmission.findMany({
-                  include: { team: { select: { name: true } } },
-                  orderBy: { submittedAt: "desc" },
-                })
-              : Promise.resolve([]),
-            isMainAdmin
               ? prisma.ruleReview.findMany({
                   take: 100,
                   include: {
@@ -286,19 +359,16 @@ export async function GET(request: Request) {
                   orderBy: { createdAt: "desc" },
                 })
               : Promise.resolve([]),
-            isMainAdmin
-              ? prisma.user.findMany({
-                  select: { id: true, name: true, email: true, role: true },
-                  orderBy: { email: "asc" },
-                })
-              : Promise.resolve([]),
           ])
         : null;
 
     const adminTeams = adminData?.[0].map((team) => ({
       id: team.id,
       name: team.name,
+      leaderboardHidden: team.leaderboardHidden,
       roundOneScore: team.roundOneScore,
+      disqualifiedAt: team.disqualifiedAt,
+      disqualificationReason: team.disqualificationReason,
       score: calculateTeamScore(
         team.roundOneScore,
         team.challengeSolves.reduce((total, solve) => total + solve.pointsAwarded, 0),
@@ -329,9 +399,23 @@ export async function GET(request: Request) {
         },
         needsTeam:
           !membership &&
-          session.user.role !== "ADMIN" &&
-          session.user.role !== "MAIN_ADMIN",
-        membershipRemoved: Boolean(membership?.removedAt),
+          isParticipant,
+        availableTeams: selectableTeams,
+        ownJoinRequests: ownJoinRequests.map((joinRequest) => ({
+          id: joinRequest.id,
+          status: joinRequest.status,
+          createdAt: joinRequest.createdAt,
+          teamName: joinRequest.team.name,
+        })),
+        incomingJoinRequests: incomingJoinRequests.map((joinRequest) => ({
+          id: joinRequest.id,
+          createdAt: joinRequest.createdAt,
+          participantName: joinRequest.user.name,
+        })),
+        membershipRemoved: Boolean(
+          membership?.removedAt || membership?.team.disqualifiedAt,
+        ),
+        teamDisqualified: Boolean(membership?.team.disqualifiedAt),
         team: activeMembership
           ? {
               id: activeMembership.team.id,
@@ -348,29 +432,27 @@ export async function GET(request: Request) {
           eventTimezone: EVENT_TIME_ZONE,
           climaxVideoUrl: climaxAvailable ? config.climaxVideoUrl : null,
           climaxAvailable,
-          finalSubmissionEnabled:
-            config.finalSubmissionEnabled && Boolean(activeMembership),
-          finalLinkOneLabel: config.finalLinkOneLabel,
-          finalLinkOneDescription: config.finalLinkOneDescription,
-          finalLinkTwoLabel: config.finalLinkTwoLabel,
-          finalLinkTwoDescription: config.finalLinkTwoDescription,
-          finalLinkThreeLabel: config.finalLinkThreeLabel,
-          finalLinkThreeDescription: config.finalLinkThreeDescription,
         },
         rounds: roundData,
         finalMissionComplete,
         leaderboard: leaderboard.slice(0, 20),
-        finalSubmission: ownSubmission,
         admin: adminData
           ? {
               isMainAdmin,
               teams: adminTeams,
               activity: adminActivity,
-              finalSubmissions: adminData[2],
-              reviews: adminData[3],
-              users: adminData[4],
+              reviews: adminData[2],
+              users: [],
               config: isMainAdmin
-                ? { ...config, eventTimezone: EVENT_TIME_ZONE }
+                ? {
+                    promoOneUrl: config.promoOneUrl,
+                    promoTwoUrl: config.promoTwoUrl,
+                    externalContestUrl: config.externalContestUrl,
+                    aiPolicy: config.aiPolicy,
+                    eventTimezone: EVENT_TIME_ZONE,
+                    climaxVideoUrl: config.climaxVideoUrl,
+                    climaxAvailableAt: config.climaxAvailableAt,
+                  }
                 : {
                     promoOneUrl: null,
                     promoTwoUrl: null,
@@ -379,13 +461,6 @@ export async function GET(request: Request) {
                     eventTimezone: EVENT_TIME_ZONE,
                     climaxVideoUrl: null,
                     climaxAvailableAt: null,
-                    finalLinkOneLabel: "Initial promotional video",
-                    finalLinkOneDescription: "",
-                    finalLinkTwoLabel: "Story reveal video",
-                    finalLinkTwoDescription: "",
-                    finalLinkThreeLabel: "Final climax video",
-                    finalLinkThreeDescription: "",
-                    finalSubmissionEnabled: false,
                   },
             }
           : null,

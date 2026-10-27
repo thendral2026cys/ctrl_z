@@ -21,13 +21,6 @@ const configSchema = z.object({
   // to EVENT_TIME_ZONE so the field cannot be changed via the API.
   climaxVideoUrl: optionalHttpsUrl,
   climaxAvailableAt: z.union([z.string().datetime().or(z.literal(""))]),
-  finalSubmissionEnabled: z.boolean(),
-  finalLinkOneLabel: z.string().trim().min(1).max(120),
-  finalLinkOneDescription: z.string().trim().max(500),
-  finalLinkTwoLabel: z.string().trim().min(1).max(120),
-  finalLinkTwoDescription: z.string().trim().max(500),
-  finalLinkThreeLabel: z.string().trim().min(1).max(120),
-  finalLinkThreeDescription: z.string().trim().max(500),
 });
 
 export async function PUT(request: Request) {
@@ -60,7 +53,7 @@ export async function PUT(request: Request) {
           actorId: session.user.id,
           actorRole: "ADMIN",
           action: "EVENT_CONFIGURATION_UPDATED",
-          details: { finalSubmissionEnabled: input.finalSubmissionEnabled },
+          details: { updatedFields: Object.keys(input) },
         },
       });
       return updated;

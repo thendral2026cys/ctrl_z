@@ -1,4 +1,11 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
 export function digestInviteCode(code: string) {
   return createHash("sha256").update(code).digest("hex");
@@ -28,6 +35,63 @@ export function verifyFlag(flag: string, expectedDigest: string) {
     candidate.length === expected.length &&
     timingSafeEqual(candidate, expected)
   );
+}
+
+function getFlagEncryptionKey() {
+  const secret =
+    process.env.BETTER_AUTH_SECRET ??
+    (process.env.NODE_ENV === "production"
+      ? ""
+      : "local-development-secret-change-before-deploy-00000000");
+  if (secret.length < 32) {
+    throw new Error(
+      "BETTER_AUTH_SECRET must contain at least 32 characters to encrypt challenge answers.",
+    );
+  }
+  return createHash("sha256").update(secret, "utf8").digest();
+}
+
+export function encryptFlag(flag: string) {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", getFlagEncryptionKey(), nonce);
+  const ciphertext = Buffer.concat([
+    cipher.update(flag, "utf8"),
+    cipher.final(),
+  ]);
+  return [
+    "v1",
+    nonce.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+    ciphertext.toString("base64url"),
+  ].join(":");
+}
+
+export function decryptFlag(encryptedFlag: string) {
+  const [version, nonceValue, tagValue, ciphertextValue] =
+    encryptedFlag.split(":");
+  if (
+    version !== "v1" ||
+    !nonceValue ||
+    !tagValue ||
+    ciphertextValue === undefined
+  ) {
+    throw new Error("Stored challenge answer has an unsupported format.");
+  }
+  const nonce = Buffer.from(nonceValue, "base64url");
+  const authTag = Buffer.from(tagValue, "base64url");
+  if (nonce.length !== 12 || authTag.length !== 16) {
+    throw new Error("Stored challenge answer is malformed.");
+  }
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    getFlagEncryptionKey(),
+    nonce,
+  );
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([
+    decipher.update(Buffer.from(ciphertextValue, "base64url")),
+    decipher.final(),
+  ]).toString("utf8");
 }
 
 export function matchesSecret(value: string, expected: string | undefined) {

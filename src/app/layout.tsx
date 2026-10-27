@@ -3,7 +3,7 @@ import { CursorEffect } from "@/components/cursor-effect";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VIPERWOLF | Cybersecurity Investigation",
+  title: "ctrl_z | Cybersecurity Investigation",
   description:
     "A story-driven, team-based cybersecurity competition platform.",
 };

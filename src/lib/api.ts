@@ -51,7 +51,7 @@ export function handleApiError(error: unknown) {
     return NextResponse.json({ error: error.message }, { status: 403 });
   }
 
-  console.error("VIPERWOLF API request failed", error);
+  console.error("ctrl_z API request failed", error);
   return NextResponse.json(
     { error: "The request could not be completed." },
     { status: 500 },

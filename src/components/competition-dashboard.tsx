@@ -1,9 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { AdminConsole } from "@/components/admin-console";
-import { authClient } from "@/lib/auth-client";
+import { BrandEmblem } from "@/components/brand-emblem";
+import { CompetitionNavigation } from "@/components/competition-navigation";
 import { EVENT_TIME_ZONE, formatEventTime } from "@/lib/time";
 
 type UserInfo = { name: string; email: string; role: string };
@@ -20,6 +21,9 @@ type Challenge = {
   enabled: boolean;
   isFinalMission: boolean;
   solved: boolean;
+  solvedByName: string | null;
+  solveCount: number;
+  solveElapsedSeconds: number | null;
   files: {
     id: string;
     fileName: string;
@@ -51,29 +55,29 @@ export type Config = {
   eventTimezone: string;
   climaxVideoUrl: string | null;
   climaxAvailable: boolean;
-  finalSubmissionEnabled: boolean;
-  finalLinkOneLabel: string;
-  finalLinkOneDescription: string;
-  finalLinkTwoLabel: string;
-  finalLinkTwoDescription: string;
-  finalLinkThreeLabel: string;
-  finalLinkThreeDescription: string;
 };
 type DashboardData = {
   user: UserInfo;
   needsTeam: boolean;
   membershipRemoved: boolean;
+  teamDisqualified: boolean;
   team: { id: string; name: string; memberRole: string; score: number } | null;
   config: Config;
   rounds: Round[];
   leaderboard: { id: string; name: string; score: number; rank: number }[];
   finalMissionComplete: boolean;
-  finalSubmission: {
-    firstUrl: string;
-    secondUrl: string;
-    thirdUrl: string;
-    submittedAt: string;
-  } | null;
+  availableTeams: { id: string; name: string; availableSlots: number }[];
+  ownJoinRequests: {
+    id: string;
+    status: string;
+    createdAt: string;
+    teamName: string;
+  }[];
+  incomingJoinRequests: {
+    id: string;
+    createdAt: string;
+    participantName: string;
+  }[];
   admin: AdminData | null;
 };
 type AdminData = {
@@ -83,6 +87,9 @@ type AdminData = {
     name: string;
     score: number;
     roundOneScore: number;
+    leaderboardHidden: boolean;
+    disqualifiedAt: string | null;
+    disqualificationReason: string | null;
     members: {
       id: string;
       userId: string;
@@ -104,14 +111,6 @@ type AdminData = {
     details: unknown;
     createdAt: string;
   }[];
-  finalSubmissions: {
-    id: string;
-    firstUrl: string;
-    secondUrl: string;
-    thirdUrl: string;
-    submittedAt: string;
-    team: { name: string };
-  }[];
   reviews: {
     id: string;
     teamId: string;
@@ -128,37 +127,72 @@ type AdminData = {
     name: string;
     email: string;
     role: string;
+    disabledAt: string | null;
+    disabledReason: string | null;
+    teamId: string | null;
+    teamName: string | null;
+    membershipRemoved: boolean;
   }[];
   config: Config & { climaxAvailableAt: string | null };
 };
-type OpenChallenge = {
-  challenge: Challenge;
-  firstOpenedAt: string;
-  elapsedSeconds: number;
-};
-
 export function CompetitionDashboard({
   initialUser,
+  view = "dashboard",
 }: {
   initialUser: UserInfo;
+  view?: "dashboard" | "challenges";
 }) {
-  const router = useRouter();
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [teamFormMessage, setTeamFormMessage] = useState("");
   const [teamFormError, setTeamFormError] = useState(false);
   const [inviteCode, setInviteCode] = useState("");
+  const [selectedTeamId, setSelectedTeamId] = useState("");
   const [showTeamCode, setShowTeamCode] = useState(false);
   const [teamCodeMessage, setTeamCodeMessage] = useState("");
   const [teamCodeError, setTeamCodeError] = useState(false);
   const [teamCodeBusy, setTeamCodeBusy] = useState(false);
-  const [openChallenge, setOpenChallenge] = useState<OpenChallenge | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const [flag, setFlag] = useState("");
-  const [submitMessage, setSubmitMessage] = useState("");
-  const [submitError, setSubmitError] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [expandedSolves, setExpandedSolves] = useState<Record<string, boolean>>({});
+  const [challengeResults, setChallengeResults] = useState<
+    Record<
+      string,
+      {
+        totalSolved: number;
+        solves: {
+          teamName: string;
+          solverName: string;
+          solverEmail: string;
+          solvedAt: string;
+          elapsedSeconds: number | null;
+        }[];
+      }
+    >
+  >({});
+  const [loadingResults, setLoadingResults] = useState<Record<string, boolean>>({});
+
+  async function toggleSolveDetails(challengeId: string) {
+    if (expandedSolves[challengeId]) {
+      setExpandedSolves((prev) => ({ ...prev, [challengeId]: false }));
+      return;
+    }
+    setExpandedSolves((prev) => ({ ...prev, [challengeId]: true }));
+    if (!challengeResults[challengeId]) {
+      setLoadingResults((prev) => ({ ...prev, [challengeId]: true }));
+      try {
+        const response = await fetch(`/api/admin/challenges/${challengeId}/results`, {
+          cache: "no-store",
+        });
+        const body = await response.json();
+        if (response.ok) {
+          setChallengeResults((prev) => ({ ...prev, [challengeId]: body }));
+        }
+      } finally {
+        setLoadingResults((prev) => ({ ...prev, [challengeId]: false }));
+      }
+    }
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -186,12 +220,6 @@ export function CompetitionDashboard({
     };
   }, [refreshKey]);
 
-  useEffect(() => {
-    if (!openChallenge) return;
-    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [openChallenge]);
-
   function refresh() {
     setError("");
     setRefreshKey((value) => value + 1);
@@ -205,8 +233,32 @@ export function CompetitionDashboard({
     const form = new FormData(event.currentTarget);
     const teamName = String(form.get("teamName") ?? "").trim();
     const code = String(form.get("inviteCode") ?? "").trim();
+    const requestTeamId = String(form.get("teamId") ?? "").trim();
 
     try {
+      if ([teamName, code, requestTeamId].filter(Boolean).length > 1) {
+        throw new Error("Choose one team setup option at a time.");
+      }
+      if (requestTeamId) {
+        const response = await fetch("/api/team/join-requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ teamId: requestTeamId }),
+        });
+        const body = (await response.json()) as {
+          error?: string;
+          request?: { teamName: string };
+        };
+        if (!response.ok) {
+          throw new Error(body.error ?? "Team request could not be sent.");
+        }
+        setTeamFormMessage(
+          `Your request to join ${body.request?.teamName ?? "the team"} was sent to its leader.`,
+        );
+        refresh();
+        return;
+      }
+
       const response = await fetch("/api/onboarding", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -252,70 +304,39 @@ export function CompetitionDashboard({
     }
   }
 
-  async function openChallengeById(challengeId: string) {
+  async function decideJoinRequest(
+    requestId: string,
+    decision: "accept" | "deny",
+  ) {
     setBusy(true);
-    setSubmitMessage("");
+    setTeamFormMessage("");
+    setTeamFormError(false);
     try {
-      const response = await fetch(`/api/challenges/${challengeId}/open`, {
-        method: "POST",
+      const response = await fetch(`/api/team/join-requests/${requestId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
       });
-      const body = (await response.json()) as OpenChallenge & { error?: string };
-      if (!response.ok) throw new Error(body.error ?? "Challenge is unavailable.");
-      setOpenChallenge(body);
-      setElapsed(body.elapsedSeconds);
-      setFlag("");
-    } catch (reason) {
-      setSubmitError(true);
-      setSubmitMessage(
-        reason instanceof Error ? reason.message : "Challenge is unavailable.",
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error ?? "Membership request could not be updated.");
+      }
+      setTeamFormMessage(
+        decision === "accept"
+          ? "Team member accepted."
+          : "Team request declined.",
       );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitFlag(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!openChallenge) return;
-    setBusy(true);
-    setSubmitMessage("");
-    setSubmitError(false);
-    try {
-      const response = await fetch(
-        `/api/challenges/${openChallenge.challenge.id}/submit`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ flag }),
-        },
-      );
-      const body = (await response.json()) as {
-        correct?: boolean;
-        alreadySolved?: boolean;
-        pointsAwarded?: number;
-        error?: string;
-      };
-      if (!response.ok) throw new Error(body.error ?? "Flag submission failed.");
-      setSubmitMessage(
-        body.alreadySolved
-          ? "Your team already solved this challenge. No additional points were awarded."
-          : `Correct flag. ${body.pointsAwarded ?? 0} points awarded to your team.`,
-      );
-      setFlag("");
       refresh();
     } catch (reason) {
-      setSubmitError(true);
-      setSubmitMessage(
-        reason instanceof Error ? reason.message : "Flag submission failed.",
+      setTeamFormError(true);
+      setTeamFormMessage(
+        reason instanceof Error
+          ? reason.message
+          : "Membership request could not be updated.",
       );
     } finally {
       setBusy(false);
     }
-  }
-
-  async function signOut() {
-    await authClient.signOut();
-    router.refresh();
   }
 
   async function generateTeamCode() {
@@ -360,8 +381,8 @@ export function CompetitionDashboard({
       <main className="auth-layout">
         <section className="auth-card">
           <div className="brand">
-            <span className="brand-mark">V</span>
-            <span>VIPERWOLF</span>
+            <BrandEmblem />
+            <span>ctrl_z</span>
           </div>
           <h1>Dashboard unavailable</h1>
           <p className="message error">{error}</p>
@@ -377,7 +398,7 @@ export function CompetitionDashboard({
   if (!data) {
     return (
       <main className="auth-layout">
-        <p className="muted" role="status">Loading secure event workspace…</p>
+        <p className="muted" role="status">COMPILING REALITY......99%</p>
       </main>
     );
   }
@@ -385,46 +406,27 @@ export function CompetitionDashboard({
   const finalMissionComplete = data.finalMissionComplete;
 
   return (
-    <>
-      <div className="shell">
-        <header className="topbar">
-          <a className="brand" href="#top">
-            <span className="brand-mark">V</span>
-            <span>VIPERWOLF</span>
-          </a>
-          {data.team?.memberRole === "LEADER" && (
-            <nav className="top-navigation" aria-label="Team navigation">
-              <button
-                className="btn-secondary"
-                type="button"
-                aria-expanded={showTeamCode}
-                aria-controls="team-code-panel"
-                onClick={() => void generateTeamCode()}
-                disabled={teamCodeBusy}
-              >
-                {teamCodeBusy ? "Loading code…" : "Team code"}
-              </button>
-            </nav>
-          )}
-          <nav className="top-navigation" aria-label="Competition navigation">
-            <a className="btn-secondary" href="/leaderboard">
-              Leaderboard
-            </a>
-          </nav>
-          <div className="user-area">
-            <span className="subtle">
-              {initialUser.name} · {data.team?.name ?? "Organizer"}
-            </span>
-            {data.user.role === "MAIN_ADMIN" ? (
-              <span className="badge">MAIN ADMIN</span>
-            ) : data.user.role === "ADMIN" ? (
-              <span className="badge">ADMIN</span>
-            ) : null}
-            <button className="btn-secondary" onClick={signOut} type="button">
-              Sign out
-            </button>
-          </div>
-        </header>
+    <div className="shell app-layout">
+      <CompetitionNavigation
+        activePage={view === "challenges" ? "challenges" : "dashboard"}
+        userName={initialUser.name}
+        teamName={data.team?.name ?? "Organizer"}
+        role={data.user.role}
+      >
+        {data.team?.memberRole === "LEADER" && (
+          <button
+            className="btn-secondary side-team-code-button"
+            type="button"
+            aria-expanded={showTeamCode}
+            aria-controls="team-code-panel"
+            onClick={() => void generateTeamCode()}
+            disabled={teamCodeBusy}
+          >
+            {teamCodeBusy ? "Loading code…" : "Team code"}
+          </button>
+        )}
+      </CompetitionNavigation>
+      <div className="app-content">
 
         {showTeamCode && (
           <section
@@ -457,15 +459,23 @@ export function CompetitionDashboard({
         <main className="main-content" id="top">
           <section className="hero">
             <div>
-              <div className="eyebrow">Authorized competition environment</div>
-              <h1>
-                Investigate the signal.
-                <br />
-                <span>Restore the story.</span>
-              </h1>
+              {view === "dashboard" ? (
+                <h1>
+                  Investigate the signal.
+                  <br />
+                  <span>Restore the story.</span>
+                </h1>
+              ) : (
+                <h1>
+                  Competition
+                  <br />
+                  <span>Challenges</span>
+                </h1>
+              )}
               <p className="hero-copy">
-                Follow the evidence across three team-based rounds. Every
-                challenge is fictional and designed for this competition only.
+                {view === "dashboard"
+                  ? "Follow the evidence across team-based rounds. Verified solves award points directly to your team."
+                  : "Solve challenges together. Verified solves award points to your team automatically."}
               </p>
               <div className="button-row">
                 {data.config.promoOneUrl && (
@@ -486,16 +496,6 @@ export function CompetitionDashboard({
                     rel="noreferrer"
                   >
                     Watch Promo 2
-                  </a>
-                )}
-                {data.config.externalContestUrl && (
-                  <a
-                    className="btn"
-                    href={data.config.externalContestUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    External contest
                   </a>
                 )}
               </div>
@@ -533,6 +533,32 @@ export function CompetitionDashboard({
                   />
                 </div>
                 <div className="field">
+                  <label htmlFor="dashboard-team-selection">
+                    Request to join a team
+                  </label>
+                  <select
+                    className="select"
+                    id="dashboard-team-selection"
+                    name="teamId"
+                    value={selectedTeamId}
+                    onChange={(event) => setSelectedTeamId(event.target.value)}
+                    disabled={data.ownJoinRequests.some(
+                      (joinRequest) => joinRequest.status === "PENDING",
+                    )}
+                  >
+                    <option value="">Choose a team</option>
+                    {data.availableTeams.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name} · {team.availableSlots}{" "}
+                        {team.availableSlots === 1 ? "spot" : "spots"}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="subtle">
+                    The team leader must approve your request before you join.
+                  </span>
+                </div>
+                <div className="field">
                   <label htmlFor="dashboard-invite-code">Join by invite code</label>
                   <input
                     className="input"
@@ -555,7 +581,7 @@ export function CompetitionDashboard({
                 </div>
                 <div className="full form-actions">
                   <button className="btn" disabled={busy} type="submit">
-                    Continue
+                    Create team, request to join, or use invite code
                   </button>
                   {teamFormMessage && (
                     <div
@@ -563,12 +589,6 @@ export function CompetitionDashboard({
                       role="status"
                     >
                       {teamFormMessage}
-                    </div>
-                  )}
-                  {data.membershipRemoved && (
-                    <div className="message error" role="status">
-                      Your team membership was removed by an organizer. Contact the
-                      organizers if you believe this is a mistake.
                     </div>
                   )}
                   {inviteCode && (
@@ -582,11 +602,112 @@ export function CompetitionDashboard({
                   )}
                 </div>
               </form>
+              {data.ownJoinRequests.length > 0 && (
+                <div className="stack" style={{ marginTop: 16 }}>
+                  <strong>Your recent team requests</strong>
+                  {data.ownJoinRequests.map((joinRequest) => (
+                    <div className="link-card" key={joinRequest.id}>
+                      <span>
+                        {joinRequest.teamName} ·{" "}
+                        {formatEventTime(
+                          joinRequest.createdAt,
+                          EVENT_TIME_ZONE,
+                        )}{" "}
+                        IST
+                      </span>
+                      <span className="badge">
+                        {joinRequest.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+          {data.incomingJoinRequests.length > 0 && (
+            <section className="panel" aria-labelledby="team-requests-heading">
+              <div className="eyebrow">Team leader</div>
+              <h2 id="team-requests-heading">Membership requests</h2>
+              <p className="subtle">
+                Review requests to join {data.team?.name}. Teams are limited to
+                four active members.
+              </p>
+              <div className="card-list">
+                {data.incomingJoinRequests.map((joinRequest) => (
+                  <div className="link-card" key={joinRequest.id}>
+                    <div>
+                      <strong>{joinRequest.participantName}</strong>
+                      <span className="subtle">
+                        Requested{" "}
+                        {formatEventTime(
+                          joinRequest.createdAt,
+                          EVENT_TIME_ZONE,
+                        )}{" "}
+                        IST
+                      </span>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        className="btn"
+                        disabled={busy}
+                        onClick={() =>
+                          void decideJoinRequest(joinRequest.id, "accept")
+                        }
+                        type="button"
+                      >
+                        Accept
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void decideJoinRequest(joinRequest.id, "deny")
+                        }
+                        type="button"
+                      >
+                        Deny
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {data.membershipRemoved && (
+            <section className="panel" role="status">
+              <p className="message error">
+                {data.teamDisqualified
+                  ? "Your team was disqualified by an organizer. Challenge access is disabled; contact the organizers if you believe this is a mistake."
+                  : "Your team membership was removed by an organizer. Contact the organizers if you believe this is a mistake."}
+              </p>
             </section>
           )}
 
+          {view === "dashboard" && (
+            <section className="section-grid">
+              <Link className="panel span-6" href="/challenges">
+                <div className="eyebrow">Competition workspace</div>
+                <h2>Challenges</h2>
+                <p className="subtle">
+                  Open the Round 1 contest link and view available Round 2 and
+                  Round 3 challenges.
+                </p>
+                <span className="btn">Open Challenges</span>
+              </Link>
+              <Link className="panel span-6" href="/leaderboard">
+                <div className="eyebrow">Team standings</div>
+                <h2>Leaderboard</h2>
+                <p className="subtle">
+                  View the ranked team scores and points graph.
+                </p>
+                <span className="btn-secondary">Open Leaderboard</span>
+              </Link>
+            </section>
+          )}
+
+          {view === "challenges" && (
           <div className="section-grid">
-            <section className="panel span-8">
+            <section className="panel span-12">
               <div className="panel-heading">
                 <div>
                   <div className="eyebrow">Investigation timeline</div>
@@ -599,6 +720,27 @@ export function CompetitionDashboard({
                   const externalOnly =
                     !["ADMIN", "MAIN_ADMIN"].includes(data.user.role) &&
                     round.number === 1;
+
+                  if (externalOnly) {
+                    return (
+                      <article className="round-card" key={round.id}>
+                        {data.config.externalContestUrl ? (
+                          <a
+                            className="btn"
+                            href={data.config.externalContestUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open Round 1 external contest
+                          </a>
+                        ) : (
+                          <p className="subtle">
+                            The Round 1 external contest URL is not configured.
+                          </p>
+                        )}
+                      </article>
+                    );
+                  }
 
                   return (
                   <article className="round-card" key={round.id}>
@@ -644,26 +786,11 @@ export function CompetitionDashboard({
                         />
                       </div>
                     )}
-                    {externalOnly && (
-                      data.config.externalContestUrl ? (
-                        <a
-                          className="btn"
-                          href={data.config.externalContestUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Open Round 1 external contest
-                        </a>
-                      ) : (
-                        <p className="subtle">
-                          The Round 1 external contest URL is not configured.
-                        </p>
-                      )
-                    )}
                     {round.availabilityMessage && !round.available && (
                       <p className="subtle">{round.availabilityMessage}</p>
                     )}
-                    {round.available && !externalOnly && (
+                    {(round.available || data.user.role === "MAIN_ADMIN") &&
+                      !externalOnly && (
                       <div className="card-list">
                         {round.challenges.length === 0 && (
                           <p className="subtle">
@@ -683,6 +810,7 @@ export function CompetitionDashboard({
                                 <h3>{challenge.title}</h3>
                                 <div className="challenge-meta">
                                   <span>{challenge.pointValue} points</span>
+                                  <span>{challenge.solveCount} team solves</span>
                                   {challenge.isFinalMission && (
                                     <span className="badge">FINAL MISSION</span>
                                   )}
@@ -690,24 +818,147 @@ export function CompetitionDashboard({
                                     <span className="badge yellow">UNPUBLISHED</span>
                                   )}
                                   {challenge.solved && (
-                                    <span className="badge green">SOLVED</span>
+                                    <span className="badge green" title={challenge.solvedByName ? `Completed by ${challenge.solvedByName}` : "Completed"}>
+                                      ✓ Completed{challenge.solvedByName ? ` by ${challenge.solvedByName}` : ""}
+                                    </span>
+                                  )}
+                                  {challenge.solved && challenge.solveElapsedSeconds !== null && (
+                                    <span className="badge" title="Time your team took to solve this challenge">
+                                      ⏱ {Math.floor(challenge.solveElapsedSeconds / 60)}m {challenge.solveElapsedSeconds % 60}s
+                                    </span>
                                   )}
                                 </div>
                               </div>
-                              <button
-                                className={
-                                  challenge.solved ? "btn-secondary" : "btn"
-                                }
-                                disabled={busy || !data.team}
-                                onClick={() =>
-                                  void openChallengeById(challenge.id)
-                                }
-                                type="button"
-                              >
-                                {challenge.solved ? "Review" : "Investigate"}
-                              </button>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                {(data.user.role === "ADMIN" || data.user.role === "MAIN_ADMIN") && (
+                                  <>
+                                    <button
+                                      className={`btn-secondary`}
+                                      style={{ fontSize: 12, padding: "4px 10px" }}
+                                      title={challenge.enabled ? "Hide this challenge from participants" : "Show this challenge to participants"}
+                                      type="button"
+                                      onClick={() => {
+                                        void fetch(`/api/admin/challenges/${challenge.id}`, {
+                                          method: "PATCH",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ enabled: !challenge.enabled }),
+                                        }).then((res) => {
+                                          if (res.ok) window.location.reload();
+                                          else void res.json().then((e) => alert((e as { error?: string }).error ?? "Failed"));
+                                        });
+                                      }}
+                                    >
+                                      {challenge.enabled ? "🙈 Hide" : "👁 Show"}
+                                    </button>
+                                    <button
+                                      className="btn-secondary"
+                                      style={{ fontSize: 12, padding: "4px 10px" }}
+                                      title="View participants and teams who solved this challenge"
+                                      type="button"
+                                      onClick={() => void toggleSolveDetails(challenge.id)}
+                                    >
+                                      {expandedSolves[challenge.id]
+                                        ? "Hide solves"
+                                        : `📊 Solves (${challenge.solveCount})`}
+                                    </button>
+                                  </>
+                                )}
+                                <Link
+                                  className={
+                                    challenge.solved ? "btn-secondary" : "btn"
+                                  }
+                                  href={`/challenges/${challenge.id}`}
+                                  aria-disabled={
+                                    !data.team &&
+                                    data.user.role !== "MAIN_ADMIN"
+                                  }
+                                  onClick={(event) => {
+                                    if (
+                                      !data.team &&
+                                      data.user.role !== "MAIN_ADMIN"
+                                    ) {
+                                      event.preventDefault();
+                                    }
+                                  }}
+                                >
+                                  {challenge.solved ? "Review" : "Investigate"}
+                                </Link>
+                              </div>
                             </div>
                             <p className="subtle">{challenge.description}</p>
+                            {expandedSolves[challenge.id] && (
+                              <div
+                                style={{
+                                  marginTop: 12,
+                                  borderTop: "1px solid var(--border, rgba(255,255,255,0.1))",
+                                  paddingTop: 10,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    marginBottom: 8,
+                                  }}
+                                >
+                                  <strong style={{ fontSize: 13 }}>
+                                    Solvers ({challengeResults[challenge.id]?.totalSolved ?? challenge.solveCount} teams)
+                                  </strong>
+                                  <span className="subtle" style={{ fontSize: 12 }}>Timezone: IST</span>
+                                </div>
+                                {loadingResults[challenge.id] ? (
+                                  <p className="subtle" style={{ margin: 0, fontSize: 13 }}>
+                                    Loading solver history…
+                                  </p>
+                                ) : challengeResults[challenge.id]?.solves?.length ? (
+                                  <div className="table-wrap" style={{ maxHeight: 240, overflowY: "auto" }}>
+                                    <table className="data-table" style={{ fontSize: 12 }}>
+                                      <thead>
+                                        <tr>
+                                          <th>Team</th>
+                                          <th>Solver</th>
+                                          <th>Time taken</th>
+                                          <th>Solved at (IST)</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {challengeResults[challenge.id].solves.map((solve) => (
+                                          <tr key={`${solve.teamName}-${solve.solvedAt}`}>
+                                            <td><strong>{solve.teamName}</strong></td>
+                                            <td>
+                                              {solve.solverName}
+                                              <span className="subtle" style={{ display: "block", fontSize: 11 }}>
+                                                {solve.solverEmail}
+                                              </span>
+                                            </td>
+                                            <td>
+                                              <span className="badge" style={{ fontSize: 11 }}>
+                                                {solve.elapsedSeconds === null
+                                                  ? "Timer unavailable"
+                                                  : `⏱ ${Math.floor(solve.elapsedSeconds / 60)}m ${
+                                                      solve.elapsedSeconds % 60
+                                                    }s`}
+                                              </span>
+                                            </td>
+                                            <td style={{ whiteSpace: "nowrap" }}>
+                                              {formatEventTime(
+                                                solve.solvedAt,
+                                                data.config.eventTimezone || EVENT_TIME_ZONE,
+                                              )}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <p className="subtle" style={{ margin: 0, fontSize: 13 }}>
+                                    No team has solved this challenge yet.
+                                  </p>
+                                )}
+                              </div>
+                            )}
                           </article>
                         ))}
                       </div>
@@ -727,124 +978,9 @@ export function CompetitionDashboard({
                   );
                 })}
               </div>
-              {submitMessage && (
-                <p
-                  className={`message${submitError ? " error" : ""}`}
-                  role="status"
-                  style={{ marginTop: 14 }}
-                >
-                  {submitMessage}
-                </p>
-              )}
-              {openChallenge && (
-                <section className="challenge-detail" aria-live="polite">
-                  <div className="panel-heading">
-                    <div>
-                      <div className="eyebrow">Shared team timer</div>
-                      <h2>{openChallenge.challenge.title}</h2>
-                    </div>
-                    <span className="badge">
-                      {Math.floor(elapsed / 60)
-                        .toString()
-                        .padStart(2, "0")}
-                      :
-                      {(elapsed % 60).toString().padStart(2, "0")} elapsed
-                    </span>
-                  </div>
-                  <p>{openChallenge.challenge.description}</p>
-                  {openChallenge.challenge.evidenceText && (
-                    <pre className="evidence-text">
-                      {openChallenge.challenge.evidenceText}
-                    </pre>
-                  )}
-                  {openChallenge.challenge.files.length > 0 && (
-                    <div className="stack">
-                      <strong>Evidence files</strong>
-                      {openChallenge.challenge.files.map((file) => (
-                        <a
-                          href={`/api/evidence/${file.id}`}
-                          key={file.id}
-                          rel="noreferrer"
-                          target="_blank"
-                        >
-                          {file.fileName} ·{" "}
-                          {Math.ceil(file.byteLength / 1024)} KB
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                  {openChallenge.challenge.hints.length > 0 && (
-                    <details className="details">
-                      <summary>Available hints</summary>
-                      <ol>
-                        {openChallenge.challenge.hints.map((hint, index) => (
-                          <li key={`${index}-${hint}`}>{hint}</li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-                  <form className="inline-form" onSubmit={submitFlag}>
-                    <div className="field" style={{ flex: "1 1 260px" }}>
-                      <label htmlFor="challenge-flag">Submit team flag</label>
-                      <input
-                        className="input"
-                        id="challenge-flag"
-                        name="flag"
-                        autoComplete="off"
-                        value={flag}
-                        onChange={(event) => setFlag(event.target.value)}
-                        maxLength={500}
-                        required
-                      />
-                    </div>
-                    <button className="btn" disabled={busy} type="submit">
-                      Submit flag
-                    </button>
-                  </form>
-                </section>
-              )}
             </section>
 
-            <aside className="panel span-4">
-              <div className="panel-heading">
-                <div>
-                  <div className="eyebrow">Live standings</div>
-                  <h2>Team leaderboard</h2>
-                </div>
-              </div>
-              {data.leaderboard.length === 0 ? (
-                <p className="subtle">Scores appear after a valid solve.</p>
-              ) : (
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Rank</th>
-                        <th>Team</th>
-                        <th>Points</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.leaderboard.slice(0, 20).map((team) => (
-                        <tr key={team.id}>
-                          <td className="rank">{team.rank}</td>
-                          <td>{team.name}</td>
-                          <td>{team.score}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <p className="subtle" style={{ marginBottom: 0 }}>
-                Public standings show team names and totals only.
-              </p>
-              <a className="btn-secondary" href="/leaderboard">
-                View full leaderboard and graph
-              </a>
-            </aside>
-
-            <section className="panel span-6">
+            <section className="panel span-12">
               <div className="eyebrow">Competition rules</div>
               <h2>AI-use policy</h2>
               {data.config.aiPolicy.trim() ? (
@@ -858,40 +994,8 @@ export function CompetitionDashboard({
                 </div>
               )}
             </section>
-
-            {data.team && (
-              <section className="panel span-6">
-                <div className="eyebrow">Team submission</div>
-                <h2>Three story links</h2>
-                {!data.config.finalSubmissionEnabled ? (
-                  <p className="subtle">
-                    The organizers have not opened the final submission yet.
-                  </p>
-                ) : (
-                  <div className="stack">
-                    <p className="subtle">
-                      The three-link submission is independent of the
-                      restoration animation. Your team can update its links
-                      until organizers close the page.
-                    </p>
-                    {data.finalSubmission && (
-                      <p className="subtle">
-                        Last submitted{" "}
-                        {formatEventTime(
-                          data.finalSubmission.submittedAt,
-                          data.config.eventTimezone,
-                        )}
-                        .
-                      </p>
-                    )}
-                    <a className="btn" href="/final-submission">
-                      Open final-submission page
-                    </a>
-                  </div>
-                )}
-              </section>
-            )}
           </div>
+          )}
 
           {finalMissionComplete && (
             <section className="restoration">
@@ -899,8 +1003,7 @@ export function CompetitionDashboard({
               <div className="eyebrow">Mission complete</div>
               <h2>System restoration sequence</h2>
               <p className="subtle">
-                The fictional device is secure again. Incident status: resolved.
-                This visual simulation does not interact with real devices.
+                Incident status: resolved.
               </p>
               <div className="status-lights" aria-label="All system indicators normal">
                 <span />
@@ -922,7 +1025,7 @@ export function CompetitionDashboard({
             </section>
           )}
 
-          {data.admin && (
+          {view === "dashboard" && data.admin && (
             <AdminConsole
               admin={data.admin}
               rounds={data.rounds}
@@ -931,165 +1034,7 @@ export function CompetitionDashboard({
             />
           )}
         </main>
-        <footer className="footer">
-          VIPERWOLF · Authorized, fictional competition environment · No real
-          device access
-        </footer>
       </div>
-    </>
-  );
-}
-
-export type FinalLinkConfig = Pick<
-  Config,
-  | "finalLinkOneLabel"
-  | "finalLinkOneDescription"
-  | "finalLinkTwoLabel"
-  | "finalLinkTwoDescription"
-  | "finalLinkThreeLabel"
-  | "finalLinkThreeDescription"
-  | "eventTimezone"
->;
-
-export function FinalSubmissionForm({
-  config,
-  submission,
-  onSaved,
-}: {
-  config: Config;
-  submission: DashboardData["finalSubmission"];
-  onSaved: () => void;
-}) {
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [values, setValues] = useState({
-    firstUrl: submission?.firstUrl ?? "",
-    secondUrl: submission?.secondUrl ?? "",
-    thirdUrl: submission?.thirdUrl ?? "",
-  });
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
-    setError(false);
-    try {
-      const response = await fetch("/api/team/final-submission", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values),
-      });
-      const body = (await response.json()) as {
-        error?: string;
-        submittedAt?: string;
-      };
-      if (!response.ok) throw new Error(body.error ?? "Submission failed.");
-      setMessage(
-        `All three links were saved for your team at ${formatEventTime(
-          body.submittedAt ?? "",
-          EVENT_TIME_ZONE,
-        )} IST.`,
-      );
-      onSaved();
-    } catch (reason) {
-      setError(true);
-      setMessage(
-        reason instanceof Error ? reason.message : "Submission failed.",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const fields = [
-    {
-      key: "firstUrl" as const,
-      label: config.finalLinkOneLabel,
-      description: config.finalLinkOneDescription,
-    },
-    {
-      key: "secondUrl" as const,
-      label: config.finalLinkTwoLabel,
-      description: config.finalLinkTwoDescription,
-    },
-    {
-      key: "thirdUrl" as const,
-      label: config.finalLinkThreeLabel,
-      description: config.finalLinkThreeDescription,
-    },
-  ];
-
-  return (
-    <form className="field-group" onSubmit={submit}>
-      <p className="subtle">
-        Submit exactly three HTTPS video links. A URL does not confirm that a
-        team watched its video.
-      </p>
-      {fields.map((field) => (
-        <div className="field" key={field.key}>
-          <label htmlFor={field.key}>{field.label}</label>
-          {field.description && <span className="subtle">{field.description}</span>}
-          <input
-            className="input"
-            id={field.key}
-            type="url"
-            inputMode="url"
-            autoComplete="url"
-            placeholder="https://"
-            maxLength={2048}
-            value={values[field.key]}
-            onChange={(event) =>
-              setValues((previous) => ({
-                ...previous,
-                [field.key]: event.target.value,
-              }))
-            }
-            required
-          />
-        </div>
-      ))}
-      {submission && (
-        <div className="subtle">
-          Last saved{" "}
-          {formatEventTime(submission.submittedAt, config.eventTimezone)}.
-        </div>
-      )}
-      {message && (
-        <div className={`message${error ? " error" : ""}`} role="status">
-          {message}
-        </div>
-      )}
-      <button className="btn" disabled={busy} type="submit">
-        {busy ? "Saving…" : "Save three links"}
-      </button>
-    </form>
-  );
-}
-
-export function FinalSubmissionPageClient({
-  config,
-  submission,
-}: {
-  config: FinalLinkConfig;
-  submission: DashboardData["finalSubmission"];
-}) {
-  const router = useRouter();
-
-  return (
-    <FinalSubmissionForm
-      config={{
-        promoOneUrl: null,
-        promoTwoUrl: null,
-        externalContestUrl: null,
-        aiPolicy: "",
-        climaxVideoUrl: null,
-        climaxAvailable: false,
-        finalSubmissionEnabled: true,
-        ...config,
-      }}
-      submission={submission}
-      onSaved={() => router.refresh()}
-    />
+    </div>
   );
 }

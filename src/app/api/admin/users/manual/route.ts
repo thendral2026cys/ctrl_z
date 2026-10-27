@@ -4,7 +4,10 @@ import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
 import { assertSameOrigin } from "@/lib/security";
-import { MAIN_ADMIN_EMAIL, requireMainAdmin } from "@/lib/server";
+import {
+  isMainAdminEmail,
+  requireMainAdmin,
+} from "@/lib/server";
 
 const manualAdminSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -19,9 +22,9 @@ export async function POST(request: Request) {
     const session = await requireMainAdmin(request.headers);
     const input = manualAdminSchema.parse(await readJson(request));
     const email = input.email.toLowerCase();
-    if (email === MAIN_ADMIN_EMAIL) {
+    if (isMainAdminEmail(email)) {
       throw new ApiError(
-        "The main administrator's reserved email cannot be provisioned through this form.",
+        "A designated main administrator email cannot be provisioned through this form.",
         409,
       );
     }
@@ -29,10 +32,13 @@ export async function POST(request: Request) {
     const result = await prisma.$transaction(async (transaction) => {
       const existingUser = await transaction.user.findUnique({
         where: { email },
-        select: { id: true, role: true },
+        select: { id: true, role: true, disabledAt: true },
       });
       if (existingUser?.role === "MAIN_ADMIN") {
         throw new ApiError("The main administrator account cannot be reconfigured here.", 409);
+      }
+      if (existingUser?.disabledAt) {
+        throw new ApiError("This account is disabled. Reactivate it before adding a login.", 409);
       }
 
       const userId = existingUser?.id ?? randomUUID();
@@ -86,12 +92,13 @@ export async function POST(request: Request) {
       await transaction.activityLog.create({
         data: {
           actorId: session.user.id,
-          actorRole: "ADMIN",
-          action: "ADMIN_MANUAL_LOGIN_CREATED",
+          actorRole: session.user.role,
+          action: "MANUAL_LOGIN_CREATED",
           details: {
             targetUserId: userId,
             targetEmail: email,
-            accountRole: existingUser?.role === "ADMIN" ? "ADMIN" : input.role,
+            accountRole:
+              existingUser?.role === "ADMIN" ? "ADMIN" : input.role,
             addedToExistingAccount: Boolean(existingUser),
           },
         },

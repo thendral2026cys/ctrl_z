@@ -13,6 +13,10 @@ const roundChangeSchema = z.discriminatedUnion("action", [
     closesAt: z.union([z.string().datetime(), z.literal("")]),
   }),
   z.object({
+    action: z.literal("rename"),
+    name: z.string().trim().min(1).max(120),
+  }),
+  z.object({
     action: z.literal("content"),
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().max(10000),
@@ -30,6 +34,12 @@ export async function PATCH(
     const session = await requireMainAdmin(request.headers);
     const { id } = await context.params;
     const input = roundChangeSchema.parse(await readJson(request));
+    if (
+      input.action !== "rename" &&
+      session.user.role !== "MAIN_ADMIN"
+    ) {
+      await requireMainAdmin(request.headers);
+    }
 
     if (
       input.action === "content" &&
@@ -42,33 +52,27 @@ export async function PATCH(
     const updated = await prisma.$transaction(
       async (transaction) => {
         const round = await transaction.round.findUnique({ where: { id } });
-        if (!round) {
-          throw new ApiError("Round not found.", 404);
+        if (!round || round.archivedAt) {
+          throw new ApiError("Active round not found.", 404);
         }
 
         if (input.action === "start" || input.action === "schedule") {
           if (round.status === "OPEN" && input.action === "start") {
+            throw new ApiError("An open round is already running.", 409);
+          }
+          const subsequentActive = await transaction.round.findFirst({
+            where: {
+              number: { gt: round.number },
+              status: { in: ["OPEN", "SCHEDULED"] },
+              archivedAt: null,
+            },
+            select: { number: true },
+          });
+          if (subsequentActive) {
             throw new ApiError(
-              "An open round is already running.",
+              `Round ${subsequentActive.number} is already open or scheduled. Reschedule it before changing Round ${round.number}.`,
               409,
             );
-          }
-          if (round.status === "CLOSED" && input.action === "start") {
-            const subsequentOpen = await transaction.round.findFirst({
-              where: {
-                number: { gt: round.number },
-                status: "OPEN",
-              },
-            });
-            if (subsequentOpen) {
-              throw new ApiError(
-                `Round ${subsequentOpen.number} is currently open. Close Round ${subsequentOpen.number} before reopening Round ${round.number}.`,
-                409,
-              );
-            }
-          }
-          if (round.status === "CLOSED" && input.action === "schedule") {
-            throw new ApiError("Reopen the round before scheduling it.", 409);
           }
           if (round.number === 1) {
             const config = await transaction.eventConfig.findUnique({
@@ -128,10 +132,7 @@ export async function PATCH(
           const closesAt = input.closesAt
             ? new Date(input.closesAt)
             : null;
-          if (
-            opensAt <= new Date() ||
-            (closesAt && closesAt <= opensAt)
-          ) {
+          if (opensAt <= new Date() || (closesAt && closesAt <= opensAt)) {
             throw new ApiError(
               "A scheduled start must be in the future and end after it.",
               400,
@@ -145,6 +146,11 @@ export async function PATCH(
               opensAt,
               closesAt,
             },
+          });
+        } else if (input.action === "rename") {
+          nextRound = await transaction.round.update({
+            where: { id },
+            data: { name: input.name },
           });
         } else {
           nextRound = await transaction.round.update({
@@ -163,11 +169,12 @@ export async function PATCH(
         await transaction.activityLog.create({
           data: {
             actorId: session.user.id,
-            actorRole: "ADMIN",
+            actorRole: session.user.role,
             roundId: id,
             action: `ROUND_${input.action.toUpperCase()}`,
             details: {
               status: nextRound.status,
+              name: nextRound.name,
               opensAt: nextRound.opensAt?.toISOString() ?? null,
               closesAt: nextRound.closesAt?.toISOString() ?? null,
             },
@@ -179,6 +186,60 @@ export async function PATCH(
     );
 
     return Response.json({ round: updated });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  try {
+    assertSameOrigin(request);
+    const session = await requireMainAdmin(request.headers);
+    const { id } = await context.params;
+    const archived = await prisma.$transaction(async (transaction) => {
+      const round = await transaction.round.findUnique({ where: { id } });
+      if (!round || round.archivedAt) {
+        throw new ApiError("Active round not found.", 404);
+      }
+      if (round.number === 1) {
+        throw new ApiError(
+          "Round 1 cannot be removed because it contains the external contest and manual scoring.",
+          409,
+        );
+      }
+      if (round.status === "OPEN" || round.status === "SCHEDULED") {
+        throw new ApiError("Close the round before removing it.", 409);
+      }
+
+      const updated = await transaction.round.update({
+        where: { id },
+        data: {
+          archivedAt: new Date(),
+          enabled: false,
+          status: "CLOSED",
+          closesAt: new Date(),
+        },
+      });
+      await transaction.activityLog.create({
+        data: {
+          actorId: session.user.id,
+          actorRole: session.user.role,
+          roundId: id,
+          action: "ROUND_ARCHIVED",
+          details: {
+            roundNumber: round.number,
+            roundName: round.name,
+            historicalScoresAndActivityPreserved: true,
+          },
+        },
+      });
+      return updated;
+    });
+
+    return Response.json({ archived: true, round: archived });
   } catch (error) {
     return handleApiError(error);
   }

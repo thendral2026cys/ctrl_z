@@ -3,14 +3,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
+import { BrandEmblem } from "@/components/brand-emblem";
 import { authClient } from "@/lib/auth-client";
-
-type PublicContent = {
-  promoOneUrl: string | null;
-  promoTwoUrl: string | null;
-  externalContestUrl: string | null;
-  aiPolicy: string;
-};
 
 const signalStates = [
   "Awaiting investigator",
@@ -22,32 +16,24 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [manualBusy, setManualBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState(false);
+  const [message, setMessage] = useState(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const urlError = params.get("error") || params.get("error_description");
+      if (urlError) return urlError.replace(/_/g, " ");
+    }
+    return "";
+  });
+  const [error, setError] = useState(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(params.get("error") || params.get("error_description"));
+    }
+    return false;
+  });
   const [signalState, setSignalState] = useState(signalStates[0]);
-  const [publicContent, setPublicContent] = useState<PublicContent | null>(null);
-  const [publicError, setPublicError] = useState("");
 
   useEffect(() => {
-    let mounted = true;
-    fetch("/api/public", { cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("Public event content is unavailable.");
-        }
-        const content = (await response.json()) as PublicContent;
-        if (mounted) setPublicContent(content);
-      })
-      .catch((reason: unknown) => {
-        if (mounted) {
-          setPublicError(
-            reason instanceof Error
-              ? reason.message
-              : "Public event content is unavailable.",
-          );
-        }
-      });
-
     let stateIndex = 0;
     const interval = window.setInterval(() => {
       stateIndex = (stateIndex + 1) % signalStates.length;
@@ -55,7 +41,6 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
     }, 3600);
 
     return () => {
-      mounted = false;
       window.clearInterval(interval);
     };
   }, []);
@@ -123,8 +108,8 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
       <div className="auth-shell">
         <header className="auth-topbar">
           <a className="brand" href="#entry">
-            <span className="brand-mark">V</span>
-            <span>VIPERWOLF</span>
+            <BrandEmblem />
+            <span>ctrl_z</span>
           </a>
           <span className="connection-status">
             <span className="status-dot" />
@@ -247,21 +232,22 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                 <span aria-hidden="true">·</span>
                 <span>GOOGLE OAUTH 2.0</span>
               </div>
-              <div className="auth-assurance" aria-hidden="true">
-                <span>ORGANIZER ACCESS</span>
+              <div className="auth-assurance" style={{ marginTop: 22, marginBottom: 8 }}>
+                <span>OR SIGN IN WITH ISSUED CREDENTIALS</span>
               </div>
               <form
                 className="form-grid"
                 onSubmit={signInWithPassword}
-                style={{ marginTop: 14 }}
+                style={{ marginTop: 10 }}
               >
                 <div className="field">
-                  <label htmlFor="manual-login-email">Manual login ID (email)</label>
+                  <label htmlFor="manual-login-email">Manual Login ID (Email)</label>
                   <input
                     className="input"
                     id="manual-login-email"
                     name="email"
                     type="email"
+                    placeholder="investigator@ctrl_z.ctf"
                     autoComplete="username"
                     required
                   />
@@ -273,17 +259,21 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
                     id="manual-login-password"
                     name="password"
                     type="password"
+                    placeholder="Enter password"
                     autoComplete="current-password"
                     required
                   />
                 </div>
-                <button
-                  className="btn-secondary"
-                  disabled={manualBusy}
-                  type="submit"
-                >
-                  {manualBusy ? "Signing in…" : "                  Manual sign-in"}
-                </button>
+                <div className="full" style={{ marginTop: 4 }}>
+                  <button
+                    className="btn-secondary"
+                    disabled={manualBusy}
+                    style={{ width: "100%", justifyContent: "center" }}
+                    type="submit"
+                  >
+                    {manualBusy ? "Authenticating…" : "Manual Sign-in"}
+                  </button>
+                </div>
               </form>
             </div>
           </div>
@@ -339,57 +329,8 @@ export function AuthPanel({ googleConfigured }: { googleConfigured: boolean }) {
           </aside>
         </section>
 
-        <section className="auth-info-grid" aria-label="Event information">
-          <article className="auth-info-card">
-            <span className="info-card-index">01 / RULES</span>
-            <h2>Play within the story</h2>
-            {publicContent?.aiPolicy.trim() ? (
-              <p className="policy-snippet">{publicContent.aiPolicy}</p>
-            ) : (
-              <p>
-                {publicError
-                  ? "Event information will be available when the event service is connected."
-                  : "The organizer's official AI-use policy will appear here."}
-              </p>
-            )}
-          </article>
-          <article className="auth-info-card auth-links-card">
-            <span className="info-card-index">02 / BRIEFING</span>
-            <h2>Event links</h2>
-            <div className="auth-link-list">
-              {publicContent?.promoOneUrl && (
-                <a href={publicContent.promoOneUrl} target="_blank" rel="noreferrer">
-                  <span>Promotional video 01</span>
-                  <span aria-hidden="true">↗</span>
-                </a>
-              )}
-              {publicContent?.promoTwoUrl && (
-                <a href={publicContent.promoTwoUrl} target="_blank" rel="noreferrer">
-                  <span>Promotional video 02</span>
-                  <span aria-hidden="true">↗</span>
-                </a>
-              )}
-              {publicContent?.externalContestUrl && (
-                <a href={publicContent.externalContestUrl} target="_blank" rel="noreferrer">
-                  <span>External contest</span>
-                  <span aria-hidden="true">↗</span>
-                </a>
-              )}
-              {!publicContent?.promoOneUrl &&
-                !publicContent?.promoTwoUrl &&
-                !publicContent?.externalContestUrl && (
-                  <p className="empty-links">
-                    Event links will appear here when published.
-                  </p>
-                )}
-            </div>
-          </article>
-        </section>
-
         <footer className="auth-footer">
-          <span>VIPERWOLF</span>
-          <span>Authorized fictional competition environment</span>
-          <span>No real device or account access</span>
+          <span>ctrl_z</span>
         </footer>
       </div>
     </main>

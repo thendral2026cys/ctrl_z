@@ -1,14 +1,38 @@
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import {
+  auth,
+  MAIN_ADMIN_EMAILS,
+  getMainAdminEmails,
+  isMainAdminEmail,
+} from "@/lib/auth";
 import { ApiError } from "@/lib/api";
 import { prisma } from "@/lib/db";
 
+export {
+  MAIN_ADMIN_EMAILS,
+  getMainAdminEmails,
+  isMainAdminEmail,
+};
+
 export async function getCurrentSession() {
   const session = await auth.api.getSession({ headers: await headers() });
-  return session ? elevateDesignatedMainAdmin(session) : null;
+  if (!session) return null;
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { email: true, emailVerified: true, role: true, disabledAt: true },
+  });
+  return user && !user.disabledAt
+    ? elevateDesignatedMainAdmin({
+        ...session,
+        user: {
+          ...session.user,
+          email: user.email,
+          emailVerified: user.emailVerified,
+          role: user.role,
+        },
+      })
+    : null;
 }
-
-export const MAIN_ADMIN_EMAIL = "thendralcys@gmail.com";
 
 async function elevateDesignatedMainAdmin<
   T extends {
@@ -20,23 +44,18 @@ async function elevateDesignatedMainAdmin<
     };
   },
 >(session: T) {
-  if (
-    session.user.email.toLowerCase() !== MAIN_ADMIN_EMAIL ||
-    !session.user.emailVerified
-  ) {
+  if (!isMainAdminEmail(session.user.email)) {
     return session;
   }
 
-  if (session.user.role !== "MAIN_ADMIN") {
+  if (session.user.role !== "MAIN_ADMIN" || !session.user.emailVerified) {
     await prisma.$transaction(async (transaction) => {
       const promoted = await transaction.user.updateMany({
         where: {
           id: session.user.id,
-          email: MAIN_ADMIN_EMAIL,
-          emailVerified: true,
-          role: { not: "MAIN_ADMIN" },
+          email: { in: getMainAdminEmails() },
         },
-        data: { role: "MAIN_ADMIN" },
+        data: { role: "MAIN_ADMIN", emailVerified: true },
       });
       if (promoted.count > 0) {
         await transaction.activityLog.create({
@@ -51,7 +70,7 @@ async function elevateDesignatedMainAdmin<
     });
   }
 
-  return { ...session, user: { ...session.user, role: "MAIN_ADMIN" } };
+  return { ...session, user: { ...session.user, role: "MAIN_ADMIN", emailVerified: true } };
 }
 
 export async function requireUser(requestHeaders: Headers) {
@@ -61,7 +80,23 @@ export async function requireUser(requestHeaders: Headers) {
     throw new ApiError("Sign in to continue.", 401);
   }
 
-  return elevateDesignatedMainAdmin(session);
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { email: true, emailVerified: true, role: true, disabledAt: true },
+  });
+  if (!user || user.disabledAt) {
+    throw new ApiError("This account is disabled. Contact an administrator.", 403);
+  }
+
+  return elevateDesignatedMainAdmin({
+    ...session,
+    user: {
+      ...session.user,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      role: user.role,
+    },
+  });
 }
 
 export async function requireAdmin(requestHeaders: Headers) {
@@ -76,10 +111,7 @@ export async function requireAdmin(requestHeaders: Headers) {
 
 export async function requireMainAdmin(requestHeaders: Headers) {
   const session = await requireUser(requestHeaders);
-  if (
-    session.user.role !== "MAIN_ADMIN" ||
-    session.user.email.toLowerCase() !== MAIN_ADMIN_EMAIL
-  ) {
+  if (!isMainAdminEmail(session.user.email)) {
     throw new ApiError("Main administrator access is required.", 403);
   }
   return session;
@@ -91,7 +123,7 @@ export async function requireActiveMembership(userId: string) {
     include: { team: true },
   });
 
-  if (!membership || membership.removedAt) {
+  if (!membership || membership.removedAt || membership.team.disqualifiedAt) {
     throw new ApiError("Join an active team to continue.", 403);
   }
 

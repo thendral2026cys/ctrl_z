@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { ApiError, handleApiError, readJson } from "@/lib/api";
 import { prisma } from "@/lib/db";
-import { assertSameOrigin, digestFlag } from "@/lib/security";
+import {
+  assertSameOrigin,
+  digestFlag,
+  encryptFlag,
+} from "@/lib/security";
 import { requireAdmin } from "@/lib/server";
 
 const challengeChangeSchema = z.object({
@@ -41,6 +45,13 @@ export async function PATCH(
 
       if (!current) {
         throw new ApiError("Challenge not found.", 404);
+      }
+      const currentRound = await transaction.round.findUnique({
+        where: { id: current.roundId },
+        select: { archivedAt: true },
+      });
+      if (currentRound?.archivedAt) {
+        throw new ApiError("Challenges in archived rounds cannot be changed.", 409);
       }
 
       if (input.isFinalMission && current.round.number !== 3) {
@@ -120,6 +131,7 @@ export async function PATCH(
           ...(nextOpensAt !== undefined ? { opensAt: nextOpensAt } : {}),
           ...(nextClosesAt !== undefined ? { closesAt: nextClosesAt } : {}),
           ...(flag ? { flagDigest: digestFlag(flag) } : {}),
+          ...(flag ? { flagEncrypted: encryptFlag(flag) } : {}),
           ...(input.isFinalMission !== undefined
             ? {
                 finalMissionKey: input.isFinalMission
@@ -186,6 +198,7 @@ export async function DELETE(
 
         // Delete associated records with Restrict foreign keys
         await transaction.evidenceFile.deleteMany({ where: { challengeId: id } });
+        await transaction.challengeWriteup.deleteMany({ where: { challengeId: id } });
         await transaction.teamChallengeTimer.deleteMany({ where: { challengeId: id } });
         await transaction.flagAttempt.deleteMany({ where: { challengeId: id } });
         await transaction.challengeSolve.deleteMany({ where: { challengeId: id } });

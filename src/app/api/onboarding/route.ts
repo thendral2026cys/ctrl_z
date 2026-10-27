@@ -112,6 +112,17 @@ export async function POST(request: Request) {
       throw new ApiError("This account already has a team membership.", 409);
     }
 
+    const pendingJoinRequest = await prisma.teamJoinRequest.findFirst({
+      where: { userId: session.user.id, status: "PENDING" },
+      select: { team: { select: { name: true } } },
+    });
+    if (pendingJoinRequest) {
+      throw new ApiError(
+        `Your request to join ${pendingJoinRequest.team.name} is awaiting leader approval.`,
+        409,
+      );
+    }
+
     if (input.teamName && input.inviteCode) {
       throw new ApiError("Create a team or join one, not both.", 400);
     }
@@ -184,7 +195,7 @@ export async function POST(request: Request) {
     }
 
     throw new ApiError(
-      "Enter a team name to create a team, or an invite code to join one.",
+      "Create a team, choose a team to request, or enter an invite code.",
       400,
     );
   } catch (error) {

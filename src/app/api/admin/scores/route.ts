@@ -6,14 +6,14 @@ import {
   allocateRoundOneScore,
   calculateTeamScore,
 } from "@/lib/scoring";
-import { requireAdmin, requireMainAdmin } from "@/lib/server";
+import { requireAdmin } from "@/lib/server";
 
 const scoreSchema = z.union([
   z
     .object({
       teamId: z.string().min(1),
       score: z.number().int().min(0).max(100000),
-      reason: z.string().trim().min(3).max(500),
+      reason: z.string().trim().max(500).optional().default(""),
     })
     .strict(),
   z
@@ -25,7 +25,7 @@ const scoreSchema = z.union([
         .min(-100000)
         .max(100000)
         .refine((value) => value !== 0),
-      reason: z.string().trim().min(3).max(500),
+      reason: z.string().trim().max(500).optional().default(""),
     })
     .strict(),
 ]);
@@ -35,8 +35,11 @@ export async function POST(request: Request) {
     assertSameOrigin(request);
     const session = await requireAdmin(request.headers);
     const input = scoreSchema.parse(await readJson(request));
-    if ("score" in input) {
-      await requireMainAdmin(request.headers);
+    if ("score" in input && session.user.role !== "MAIN_ADMIN") {
+      throw new ApiError("Only the main administrator can enter Round 1 team scores.", 403);
+    }
+    if (session.user.role !== "MAIN_ADMIN" && input.reason.length < 3) {
+      throw new ApiError("A reason is required for administrator score changes.", 400);
     }
 
     const result = await prisma.$transaction(async (transaction) => {
@@ -52,7 +55,7 @@ export async function POST(request: Request) {
         transaction.challengeSolve.aggregate({
           where: {
             teamId: team.id,
-            challenge: { round: { number: { in: [2, 3] } } },
+            challenge: { round: { number: { gte: 2 } } },
           },
           _sum: { pointsAwarded: true },
         }),
@@ -111,7 +114,7 @@ export async function POST(request: Request) {
               newScore: input.score,
               previousTeamScore: currentScore,
               newTeamScore: currentScore - team.roundOneScore + input.score,
-              reason: input.reason,
+              reason: input.reason || null,
               allocations,
             },
           },
@@ -146,7 +149,7 @@ export async function POST(request: Request) {
             previousScore: currentScore,
             newScore,
             delta: input.delta,
-            reason: input.reason,
+            reason: input.reason || null,
           },
         },
       });
