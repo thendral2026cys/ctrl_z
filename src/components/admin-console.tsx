@@ -1089,7 +1089,6 @@ export function AdminConsole({
         <div className="card-list" style={{ marginTop: 14 }}>
           {eligibleRounds.map((round) => {
             const roundNumber = round.number;
-
             const placeholderCount = Math.max(
               0,
               3 - round.challenges.length,
@@ -1293,7 +1292,7 @@ export function AdminConsole({
           </form>
         )}
         <div className="card-list" style={{ marginTop: 14 }}>
-          {rounds.flatMap((round) =>
+          {rounds.filter((round) => round.number > 1).flatMap((round) =>
             round.challenges.map((challenge) => (
               <ChallengeEditor
                 key={challenge.id}
