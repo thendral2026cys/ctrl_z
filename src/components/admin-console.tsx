@@ -316,20 +316,7 @@ export function AdminConsole({
     });
   }
 
-  async function createRound(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    await runAction(async () => {
-      await request("/api/admin/rounds", "POST", {
-        name: String(form.get("name")),
-        description: String(form.get("description") ?? ""),
-      });
-      formElement.reset();
-    });
-  }
-
-  async function createReview(event: FormEvent<HTMLFormElement>) {
+(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
@@ -1035,34 +1022,10 @@ export function AdminConsole({
       <details className="details" open>
         <summary>Round management</summary>
         <p className="subtle">
-          Add rounds, change their names, and archive closed rounds. Archived
-          rounds disappear from participant pages; their scores and audit
-          history remain preserved.
+          Change round names, schedule rounds, and archive closed rounds.
+          Archived rounds disappear from participant pages; their scores and
+          audit history remain preserved.
         </p>
-        <form className="form-grid" onSubmit={createRound}>
-          <div className="field">
-            <label htmlFor="new-round-name">New round name</label>
-            <input
-              className="input"
-              id="new-round-name"
-              name="name"
-              maxLength={120}
-              required
-            />
-          </div>
-          <div className="field">
-            <label htmlFor="new-round-description">Description (optional)</label>
-            <textarea
-              className="textarea"
-              id="new-round-description"
-              name="description"
-              maxLength={10000}
-            />
-          </div>
-          <button className="btn" disabled={busy} type="submit">
-            Add round
-          </button>
-        </form>
         <div className="card-list" style={{ marginTop: 14 }}>
           {rounds.map((round) => (
             <RoundControls
