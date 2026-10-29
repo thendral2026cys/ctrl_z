@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 
 export const MAIN_ADMIN_EMAILS = [
   "thendralcys@gmail.com",
+  "mistermanuniq@gmail.com",
 ] as const;
 
 export function getMainAdminEmails(): string[] {
