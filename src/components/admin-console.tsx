@@ -146,7 +146,7 @@ export function AdminConsole({
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [latestChallengeId, setLatestChallengeId] = useState("");
-  const eligibleRounds = rounds.filter((round) => round.number > 1);
+  const eligibleRounds = rounds;
   const [selectedChallengeRoundId, setSelectedChallengeRoundId] = useState(
     () => eligibleRounds[0]?.id ?? "",
   );
@@ -1292,7 +1292,7 @@ export function AdminConsole({
           </form>
         )}
         <div className="card-list" style={{ marginTop: 14 }}>
-          {rounds.filter((round) => round.number > 1).flatMap((round) =>
+          {rounds.flatMap((round) =>
             round.challenges.map((challenge) => (
               <ChallengeEditor
                 key={challenge.id}

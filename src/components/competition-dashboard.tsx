@@ -1028,7 +1028,7 @@ export function CompetitionDashboard({
           {view === "dashboard" && data.admin && (
             <AdminConsole
               admin={data.admin}
-              rounds={data.rounds}
+              rounds={data.rounds.filter((r) => r.number > 1)}
               isMainAdmin={data.admin.isMainAdmin}
               onUpdated={refresh}
             />
