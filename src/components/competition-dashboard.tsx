@@ -718,7 +718,6 @@ export function CompetitionDashboard({
               <div className="card-list">
                 {data.rounds.map((round) => {
                   const externalOnly =
-                    !["ADMIN", "MAIN_ADMIN"].includes(data.user.role) &&
                     round.number === 1;
 
                   if (externalOnly) {
