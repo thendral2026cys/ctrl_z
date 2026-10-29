@@ -316,7 +316,7 @@ export function AdminConsole({
     });
   }
 
-(event: FormEvent<HTMLFormElement>) {
+async function createReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
