@@ -9,7 +9,6 @@ import {
 import { prisma } from "@/lib/db";
 import { isAutomaticScoringRound } from "@/lib/scoring";
 import { assertSameOrigin, verifyFlag } from "@/lib/security";
-import { enforceFlagAttemptLimit } from "@/lib/rate-limit";
 import {
   isMainAdminEmail,
   requireActiveMembership,
@@ -98,11 +97,6 @@ export async function POST(
     }
 
     try {
-      // The rate-limit check is performed *inside* the Serializable transaction
-      // so that the counter increment and the solve creation are atomic. This
-      // prevents two concurrent requests from both passing the limit check
-      // before either commit, and avoids burning rate-limit slots for challenges
-      // that are discovered to be already solved inside the transaction.
       const result = await prisma.$transaction(async (transaction) => {
         const currentChallenge = await getAvailableChallengeInTransaction(
           transaction,
@@ -131,14 +125,6 @@ export async function POST(
             409,
           );
         }
-
-        // Enforce rate limit after the already-solved check so we don't burn
-        // slots when a concurrent request already submitted the correct flag.
-        await enforceFlagAttemptLimit(
-          transaction,
-          membership.teamId,
-          currentChallenge.id,
-        );
 
         if (!verifyFlag(input.flag, currentChallenge.flagDigest)) {
           await transaction.flagAttempt.create({
