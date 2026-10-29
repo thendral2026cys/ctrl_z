@@ -192,6 +192,7 @@ export async function getRankedTeamLeaderboard() {
     select: {
       id: true,
       name: true,
+      createdAt: true,
       roundOneScore: true,
       challengeSolves: {
         where: { challenge: { round: { number: { gte: 2 } } } },
@@ -225,6 +226,7 @@ export async function getRankedTeamLeaderboard() {
               ...team.challengeSolves.map((solve) => solve.solvedAt.getTime()),
             )
           : null,
+      createdAt: team.createdAt.getTime(),
     })),
   );
 }

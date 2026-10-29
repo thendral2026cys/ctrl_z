@@ -41,29 +41,29 @@ export function rankTeams<
     name: string;
     score: number;
     firstSolvedAt?: number | null;
+    createdAt?: number;
   },
 >(
   teams: T[],
 ) {
-  const sorted = [...teams].sort(
-    (left, right) => {
-      const timeDifference =
-        left.firstSolvedAt == null
-          ? right.firstSolvedAt == null
-            ? 0
-            : 1
-          : right.firstSolvedAt == null
-            ? -1
-            : left.firstSolvedAt - right.firstSolvedAt;
-      return (
-        right.score - left.score ||
-        timeDifference ||
-        left.name.localeCompare(right.name, "en", { sensitivity: "base" }) ||
-        left.name.localeCompare(right.name) ||
-        left.id.localeCompare(right.id)
-      );
-    },
-  );
+  const sorted = [...teams].sort((left, right) => {
+    const timeDifference =
+      left.firstSolvedAt == null
+        ? right.firstSolvedAt == null
+          ? 0
+          : 1
+        : right.firstSolvedAt == null
+          ? -1
+          : left.firstSolvedAt - right.firstSolvedAt;
+    const registrationDifference =
+      (left.createdAt ?? 0) - (right.createdAt ?? 0);
+    return (
+      right.score - left.score ||
+      timeDifference ||
+      registrationDifference ||
+      left.id.localeCompare(right.id)
+    );
+  });
 
   let previousScore: number | undefined;
   let previousFirstSolvedAt: number | null | undefined;
