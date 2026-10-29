@@ -146,11 +146,9 @@ export function AdminConsole({
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState(false);
   const [latestChallengeId, setLatestChallengeId] = useState("");
+  const eligibleRounds = rounds.filter((round) => round.number > 1);
   const [selectedChallengeRoundId, setSelectedChallengeRoundId] = useState(
-    () =>
-      rounds.find((round) => round.number === 2)?.id ??
-      rounds.find((round) => round.number > 1)?.id ??
-      "",
+    () => eligibleRounds[0]?.id ?? "",
   );
   const [selectedParticipantLogTeamId, setSelectedParticipantLogTeamId] =
     useState("");
@@ -1089,7 +1087,7 @@ export function AdminConsole({
           create challenges or affect scores until you save a challenge.
         </p>
         <div className="card-list" style={{ marginTop: 14 }}>
-          {rounds.filter((item) => item.number > 1).map((round) => {
+          {eligibleRounds.map((round) => {
             const roundNumber = round.number;
 
             const placeholderCount = Math.max(
@@ -1139,7 +1137,10 @@ export function AdminConsole({
               required
               value={selectedChallengeRoundId}
             >
-              {rounds.filter((round) => round.number > 1).map((round) => (
+              {eligibleRounds.length === 0 && (
+                <option value="">No rounds available</option>
+              )}
+              {eligibleRounds.map((round) => (
                 <option key={round.id} value={round.id}>
                   {round.name}
                 </option>
